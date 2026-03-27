@@ -1,6 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
-val desktopPackageName = "音爪"
+val desktopPackageName = "YinZhaoDesktop"
+val desktopDisplayName = "音爪"
 val desktopAppVersion = "0.1.1"
 val desktopAppVersionCode = 2L
 
@@ -38,14 +39,14 @@ compose.desktop {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = desktopPackageName
             packageVersion = desktopAppVersion
-            description = "音爪桌面客户端"
-            vendor = "音爪"
+            description = "${desktopDisplayName}桌面客户端"
+            vendor = desktopDisplayName
 
             windows {
                 iconFile.set(project.layout.projectDirectory.file("src/main/resources/desktop-icon.ico"))
                 menu = true
                 shortcut = true
-                menuGroup = desktopPackageName
+                menuGroup = desktopDisplayName
             }
         }
     }

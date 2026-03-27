@@ -108,7 +108,7 @@ def get_preferred_android_apk_artifacts() -> tuple[str, str]:
 
 
 def get_desktop_distribution_settings() -> tuple[str, str]:
-    package_name = "音爪"
+    package_name = "YinZhaoDesktop"
     package_version = "0.1.1"
     build_gradle_path = repo_path("desktop-app", "build.gradle.kts")
     if not os.path.exists(build_gradle_path):
