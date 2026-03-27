@@ -1,0 +1,7 @@
+<resources>
+    <color name="ic_launcher_background">#EFD7B1</color>
+    <color name="ic_launcher_foreground_disc">#143C36</color>
+    <color name="ic_launcher_foreground_cutout">#FFF8EE</color>
+    <color name="ic_launcher_foreground_note">#D95A27</color>
+    <color name="ic_launcher_monochrome">#111111</color>
+</resources>
