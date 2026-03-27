@@ -46,3 +46,4 @@ shared/build/
 .DS_Store
 .idea/
 *.swp
+windows-installers/

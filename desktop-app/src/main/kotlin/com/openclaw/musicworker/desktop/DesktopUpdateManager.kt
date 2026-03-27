@@ -109,7 +109,7 @@ class DesktopUpdateManager {
             .trim()
             .replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .trim('.')
-            .ifBlank { "YinZhaoDesktop-update.exe" }
+            .ifBlank { "音爪-update.exe" }
         return when {
             cleaned.lowercase(Locale.US).endsWith(".msi") -> cleaned
             cleaned.lowercase(Locale.US).endsWith(".exe") -> cleaned
@@ -135,7 +135,7 @@ class DesktopUpdateManager {
     private companion object {
         const val PROP_VERSION_NAME = "musicworker.desktop.version"
         const val PROP_VERSION_CODE = "musicworker.desktop.versionCode"
-        const val DEFAULT_VERSION_NAME = "0.1.0"
-        const val DEFAULT_VERSION_CODE = 1L
+        const val DEFAULT_VERSION_NAME = "0.1.1"
+        const val DEFAULT_VERSION_CODE = 2L
     }
 }

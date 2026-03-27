@@ -15,13 +15,11 @@ import com.openclaw.musicworker.shared.config.ApiServerConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
 import java.io.IOException
 import java.io.OutputStream
 import java.net.HttpURLConnection
@@ -29,6 +27,7 @@ import java.net.URL
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -44,11 +43,7 @@ class DesktopMusicApiClient {
         explicitNulls = false
     }
 
-    private val httpClient = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(json)
-        }
-    }
+    private val httpClient = HttpClient(CIO)
 
     suspend fun getHealth(config: ApiServerConfig): HealthPayload {
         val rawBody = httpClient.get("${config.baseUrl}/api/health").body<String>()
@@ -61,23 +56,25 @@ class DesktopMusicApiClient {
     }
 
     suspend fun getAppUpdate(config: ApiServerConfig, platform: String = "desktop"): AppUpdateInfo {
-        val rawBody = httpClient.get("${config.baseUrl}/api/app/update?platform=$platform").body<String>()
+        val normalizedPlatform = platform.lowercase(Locale.ROOT)
+        val packageQuery = if (normalizedPlatform == "desktop") "&kind=exe" else ""
+        val rawBody = httpClient.get("${config.baseUrl}/api/app/update?platform=$platform$packageQuery").body<String>()
         return decodePayload(rawBody)
     }
 
     suspend fun search(config: ApiServerConfig, keyword: String, limit: Int = 20): List<SearchItem> {
-        val rawBody = httpClient.post("${config.baseUrl}/api/search") {
-            contentType(ContentType.Application.Json)
-            setBody(SearchRequest(keyword = keyword, limit = limit))
-        }.body<String>()
+        val rawBody = postJson(
+            url = "${config.baseUrl}/api/search",
+            body = SearchRequest(keyword = keyword, limit = limit),
+        )
         return decodePayload<SearchPayload>(rawBody).results
     }
 
     suspend fun startDownload(config: ApiServerConfig, musicId: String): DownloadTask {
-        val rawBody = httpClient.post("${config.baseUrl}/api/download") {
-            contentType(ContentType.Application.Json)
-            setBody(DownloadRequest(musicId = musicId))
-        }.body<String>()
+        val rawBody = postJson(
+            url = "${config.baseUrl}/api/download",
+            body = DownloadRequest(musicId = musicId),
+        )
         return decodePayload(rawBody)
     }
 
@@ -97,10 +94,10 @@ class DesktopMusicApiClient {
     }
 
     suspend fun selectProxy(config: ApiServerConfig, name: String): ProxyInfo {
-        val rawBody = httpClient.post("${config.baseUrl}/api/proxy/select") {
-            contentType(ContentType.Application.Json)
-            setBody(ProxySelectRequest(name = name))
-        }.body<String>()
+        val rawBody = postJson(
+            url = "${config.baseUrl}/api/proxy/select",
+            body = ProxySelectRequest(name = name),
+        )
         return decodePayload(rawBody)
     }
 
@@ -143,6 +140,13 @@ class DesktopMusicApiClient {
         }
 
         return json.decodeFromJsonElement(payload)
+    }
+
+    private suspend inline fun <reified T> postJson(url: String, body: T): String {
+        return httpClient.post(url) {
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(body))
+        }.body<String>()
     }
 
     private fun decodeErrorPayload(payload: JsonObject?): String {

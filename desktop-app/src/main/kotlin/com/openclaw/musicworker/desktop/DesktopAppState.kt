@@ -49,8 +49,8 @@ data class DesktopOpsUiState(
 )
 
 data class DesktopUpdateUiState(
-    val currentVersionName: String = "0.1.0",
-    val currentVersionCode: Long = 1L,
+    val currentVersionName: String = "0.1.1",
+    val currentVersionCode: Long = 2L,
     val availableUpdate: AppUpdateInfo? = null,
     val downloadedInstallerPath: String? = null,
     val downloadedInstallerName: String? = null,

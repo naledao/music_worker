@@ -1,8 +1,8 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
-val desktopPackageName = "YinZhaoDesktop"
-val desktopAppVersion = "0.1.0"
-val desktopAppVersionCode = 1L
+val desktopPackageName = "音爪"
+val desktopAppVersion = "0.1.1"
+val desktopAppVersionCode = 2L
 
 plugins {
     kotlin("jvm") version "2.2.21"
@@ -22,8 +22,6 @@ dependencies {
     implementation(compose.material3)
 
     implementation("io.ktor:ktor-client-cio:3.4.1")
-    implementation("io.ktor:ktor-client-content-negotiation:3.4.1")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:3.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
 }
@@ -40,8 +38,15 @@ compose.desktop {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = desktopPackageName
             packageVersion = desktopAppVersion
-            description = "YinZhao Windows desktop client"
-            vendor = "OpenClaw"
+            description = "音爪桌面客户端"
+            vendor = "音爪"
+
+            windows {
+                iconFile.set(project.layout.projectDirectory.file("src/main/resources/desktop-icon.ico"))
+                menu = true
+                shortcut = true
+                menuGroup = desktopPackageName
+            }
         }
     }
 }

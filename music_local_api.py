@@ -108,8 +108,8 @@ def get_preferred_android_apk_artifacts() -> tuple[str, str]:
 
 
 def get_desktop_distribution_settings() -> tuple[str, str]:
-    package_name = "YinZhaoDesktop"
-    package_version = "0.1.0"
+    package_name = "音爪"
+    package_version = "0.1.1"
     build_gradle_path = repo_path("desktop-app", "build.gradle.kts")
     if not os.path.exists(build_gradle_path):
         return package_name, package_version
@@ -137,27 +137,183 @@ def guess_update_content_type(file_path: str) -> str:
     return "application/octet-stream"
 
 
-def get_preferred_desktop_installer_artifact() -> tuple[str, str]:
+def get_desktop_managed_packages_dir() -> str:
+    return repo_path("run", "app-packages", "desktop")
+
+
+def get_desktop_managed_manifest_path() -> str:
+    return os.path.join(get_desktop_managed_packages_dir(), "manifest.json")
+
+
+def normalize_desktop_package_kind(kind_raw: str | None) -> str:
+    kind = (kind_raw or "").strip().lower()
+    if kind in ("", "auto", "any", "default"):
+        return ""
+    if kind in ("exe", "msi"):
+        return kind
+    raise ValueError(f"unsupported desktop package kind: {kind_raw}")
+
+
+def get_desktop_package_kind_order(kind: str = "") -> list[str]:
+    if kind:
+        return [kind]
+    # The Windows desktop app defaults to EXE for update/install flow.
+    return ["exe", "msi"]
+
+
+def infer_desktop_version_name(file_name: str, package_name: str, fallback: str | None = None) -> str | None:
+    base_name = os.path.basename(file_name)
+    package_pattern = rf"^{re.escape(package_name)}-(.+)\.(?:exe|msi)$"
+    match = re.match(package_pattern, base_name, flags=re.IGNORECASE)
+    if match:
+        version_name = match.group(1).strip()
+        if version_name:
+            return version_name
+
+    generic_match = re.search(r"-(\d+(?:\.\d+)+(?:[-+._A-Za-z0-9]*)?)\.(?:exe|msi)$", base_name, flags=re.IGNORECASE)
+    if generic_match:
+        version_name = generic_match.group(1).strip()
+        if version_name:
+            return version_name
+    return fallback
+
+
+def load_desktop_managed_manifest() -> dict[str, Any] | None:
+    manifest_path = get_desktop_managed_manifest_path()
+    if not os.path.exists(manifest_path):
+        return None
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    if isinstance(manifest, dict):
+        return manifest
+    return None
+
+
+def build_desktop_artifact_record(
+    file_path: str,
+    package_kind: str,
+    source: str,
+    package_name: str,
+    fallback_version: str,
+    package_info: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    package_info = package_info if isinstance(package_info, dict) else {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    version_name = (
+        package_info.get("versionName")
+        or manifest.get("versionName")
+        or infer_desktop_version_name(os.path.basename(file_path), package_name, fallback_version)
+        or fallback_version
+    )
+    return {
+        "kind": package_kind,
+        "source": source,
+        "versionName": version_name,
+    }
+
+
+def get_managed_desktop_installer_artifact(kind: str = "") -> tuple[str, str, dict[str, Any]] | None:
+    managed_dir = get_desktop_managed_packages_dir()
+    if not os.path.isdir(managed_dir):
+        return None
+
+    package_name, package_version = get_desktop_distribution_settings()
+    manifest = load_desktop_managed_manifest()
+    packages = manifest.get("packages") if isinstance(manifest, dict) else {}
+    if not isinstance(packages, dict):
+        packages = {}
+
+    for package_kind in get_desktop_package_kind_order(kind):
+        package_info = packages.get(package_kind)
+        if isinstance(package_info, dict):
+            file_name = os.path.basename(str(package_info.get("fileName") or ""))
+            if file_name:
+                candidate = os.path.join(managed_dir, file_name)
+                if os.path.exists(candidate):
+                    return (
+                        candidate,
+                        guess_update_content_type(candidate),
+                        build_desktop_artifact_record(
+                            candidate,
+                            package_kind,
+                            "managed",
+                            package_name,
+                            package_version,
+                            package_info=package_info,
+                            manifest=manifest,
+                        ),
+                    )
+
+        matches = [path for path in glob.glob(os.path.join(managed_dir, f"*.{package_kind}")) if os.path.isfile(path)]
+        if matches:
+            candidate = max(matches, key=os.path.getmtime)
+            return (
+                candidate,
+                guess_update_content_type(candidate),
+                build_desktop_artifact_record(
+                    candidate,
+                    package_kind,
+                    "managed",
+                    package_name,
+                    package_version,
+                    manifest=manifest,
+                ),
+            )
+    return None
+
+
+def get_build_desktop_installer_artifact(kind: str = "") -> tuple[str, str, dict[str, Any]]:
     package_name, package_version = get_desktop_distribution_settings()
     base_dir = repo_path("desktop-app", "build", "compose", "binaries", "main")
     preferred_candidates = [
-        os.path.join(base_dir, "msi", f"{package_name}-{package_version}.msi"),
-        os.path.join(base_dir, "exe", f"{package_name}-{package_version}.exe"),
+        os.path.join(base_dir, package_kind, f"{package_name}-{package_version}.{package_kind}")
+        for package_kind in get_desktop_package_kind_order(kind)
     ]
     for candidate in preferred_candidates:
         if os.path.exists(candidate):
-            return candidate, guess_update_content_type(candidate)
+            package_kind = os.path.splitext(candidate)[1].lstrip(".").lower()
+            return (
+                candidate,
+                guess_update_content_type(candidate),
+                build_desktop_artifact_record(
+                    candidate,
+                    package_kind,
+                    "build-output",
+                    package_name,
+                    package_version,
+                ),
+            )
 
     fallback_patterns = [
-        os.path.join(base_dir, "msi", "*.msi"),
-        os.path.join(base_dir, "exe", "*.exe"),
+        os.path.join(base_dir, package_kind, f"*.{package_kind}")
+        for package_kind in get_desktop_package_kind_order(kind)
     ]
     for pattern in fallback_patterns:
-        matches = sorted(glob.glob(pattern), reverse=True)
+        matches = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
         if matches:
-            return matches[0], guess_update_content_type(matches[0])
+            candidate = matches[0]
+            package_kind = os.path.splitext(candidate)[1].lstrip(".").lower()
+            return (
+                candidate,
+                guess_update_content_type(candidate),
+                build_desktop_artifact_record(
+                    candidate,
+                    package_kind,
+                    "build-output",
+                    package_name,
+                    package_version,
+                ),
+            )
 
     raise FileNotFoundError(f"desktop installer not found under: {base_dir}")
+
+
+def get_preferred_desktop_installer_artifact(kind: str = "") -> tuple[str, str, dict[str, Any]]:
+    managed_artifact = get_managed_desktop_installer_artifact(kind)
+    if managed_artifact is not None:
+        return managed_artifact
+    return get_build_desktop_installer_artifact(kind)
 
 
 def sha256_file(file_path: str) -> str:
@@ -199,18 +355,25 @@ def get_android_app_update_payload() -> dict[str, Any]:
     }
 
 
-def get_desktop_app_update_payload() -> dict[str, Any]:
-    installer_path, _ = get_preferred_desktop_installer_artifact()
+def get_desktop_app_update_payload(kind: str = "") -> dict[str, Any]:
+    installer_path, _, artifact = get_preferred_desktop_installer_artifact(kind)
     package_name, package_version = get_desktop_distribution_settings()
     file_name = os.path.basename(installer_path)
+    package_kind = str(artifact.get("kind") or os.path.splitext(file_name)[1].lstrip(".").lower() or "exe")
+    download_path = "/api/app/package?platform=desktop"
+    if package_kind:
+        download_path = f"{download_path}&kind={urllib.parse.quote(package_kind, safe='')}"
     return {
         "versionCode": None,
-        "versionName": package_version,
+        "versionName": artifact.get("versionName") or infer_desktop_version_name(file_name, package_name, package_version),
         "fileName": file_name,
         "fileSize": os.path.getsize(installer_path),
         "sha256": sha256_file(installer_path),
         "updatedAt": iso_ts(os.path.getmtime(installer_path)),
-        "downloadPath": "/api/app/package?platform=desktop",
+        "downloadPath": download_path,
+        "packageKind": package_kind,
+        "managedByBackend": artifact.get("source") == "managed",
+        "source": artifact.get("source"),
     }
 
 
@@ -223,15 +386,16 @@ def normalize_update_platform(platform_raw: str | None) -> str:
     raise ValueError(f"unsupported update platform: {platform_raw}")
 
 
-def get_app_update_payload(platform: str = "android") -> dict[str, Any]:
+def get_app_update_payload(platform: str = "android", kind: str = "") -> dict[str, Any]:
     if platform == "desktop":
-        return get_desktop_app_update_payload()
+        return get_desktop_app_update_payload(kind)
     return get_android_app_update_payload()
 
 
-def get_app_update_artifact(platform: str = "android") -> tuple[str, str]:
+def get_app_update_artifact(platform: str = "android", kind: str = "") -> tuple[str, str]:
     if platform == "desktop":
-        return get_preferred_desktop_installer_artifact()
+        artifact_path, content_type, _ = get_preferred_desktop_installer_artifact(kind)
+        return artifact_path, content_type
     apk_path, _ = get_preferred_android_apk_artifacts()
     return apk_path, guess_update_content_type(apk_path)
 
@@ -464,7 +628,8 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
             if path == "/api/app/update":
                 try:
                     platform = normalize_update_platform((query.get("platform") or ["android"])[0])
-                    self._ok(get_app_update_payload(platform))
+                    package_kind = normalize_desktop_package_kind((query.get("kind") or [""])[0]) if platform == "desktop" else ""
+                    self._ok(get_app_update_payload(platform, package_kind))
                 except ValueError as e:
                     self._error(400, str(e))
                 except FileNotFoundError as e:
@@ -474,7 +639,8 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
             if path == "/api/app/package":
                 try:
                     platform = normalize_update_platform((query.get("platform") or ["android"])[0])
-                    artifact_path, content_type = get_app_update_artifact(platform)
+                    package_kind = normalize_desktop_package_kind((query.get("kind") or [""])[0]) if platform == "desktop" else ""
+                    artifact_path, content_type = get_app_update_artifact(platform, package_kind)
                 except ValueError as e:
                     self._error(400, str(e))
                     return

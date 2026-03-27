@@ -104,6 +104,14 @@ python3 -u /codes/music_worker/music_local_api.py
 - `GET /api/app/update`
 - `GET /api/app/apk`
 - `GET /api/app/package?platform=desktop`
+- `GET /api/app/package?platform=desktop&kind=exe`
+
+桌面端安装包现在支持由后端固定目录托管，优先读取：
+
+- `run/app-packages/desktop/*.exe`
+- `run/app-packages/desktop/*.msi`
+
+如果后端托管目录里没有桌面安装包，才会回退到 `desktop-app/build/compose/binaries/main/` 下的本地构建产物。
 
 ## Android App
 

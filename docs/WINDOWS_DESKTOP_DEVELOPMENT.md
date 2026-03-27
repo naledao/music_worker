@@ -366,10 +366,17 @@ Windows 端推荐把配置保存在：
 当前本地 API 已扩展为：
 
 - Android 继续使用默认 `GET /api/app/update` 与 `GET /api/app/apk`
-- 桌面端使用 `GET /api/app/update?platform=desktop`
-- 桌面端安装包下载使用 `GET /api/app/package?platform=desktop`
+- 桌面端使用 `GET /api/app/update?platform=desktop&kind=exe`
+- 桌面端安装包下载使用 `GET /api/app/package?platform=desktop&kind=exe`
+- 如果要下载 MSI，可使用 `GET /api/app/package?platform=desktop&kind=msi`
 
 也就是说，多平台安装包元数据与下载路径已经分流完成。
+
+另外，桌面安装包现在支持后端托管目录优先：
+
+- 后端托管目录：`run/app-packages/desktop/`
+- 托管元数据：`run/app-packages/desktop/manifest.json`
+- 本地构建目录只作为兜底：`desktop-app/build/compose/binaries/main/`
 
 ## 11. 打包与发布策略
 
@@ -388,6 +395,19 @@ Windows 端推荐把配置保存在：
 推荐顺序：
 
 1. 先生成本地安装包
+2. 将 `.exe/.msi` 导入后端托管目录
+3. 再通过后端统一分发下载
+
+建议导入命令：
+
+```bash
+python3 bin/publish_desktop_installers.py --source windows-installers/run-23638251764
+```
+
+执行后，后端稳定下载地址会变成：
+
+- `http://<backend-host>:18081/api/app/package?platform=desktop&kind=exe`
+- `http://<backend-host>:18081/api/app/package?platform=desktop&kind=msi`
 2. 再上传到 GitHub Releases
 3. 再接桌面端自更新机制
 
