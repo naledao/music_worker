@@ -35,6 +35,31 @@ jobs:
       - name: Package EXE And MSI
         run: .\android-app\gradlew.bat -p .\desktop-app clean packageReleaseExe packageReleaseMsi
 
+      - name: Dump jpackage logs on failure
+        if: failure()
+        run: |
+          $logRoot = ".\desktop-app\build\compose\logs"
+          $tmpRoot = ".\desktop-app\build\compose\tmp"
+          Write-Host "Dumping compose logs from: $logRoot"
+          if (Test-Path $logRoot) {
+            Get-ChildItem -Path $logRoot -Recurse -File | ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content -Path $_.FullName
+            }
+          } else {
+            Write-Host "Compose log directory not found."
+          }
+
+          Write-Host "Dumping jpackage args from: $tmpRoot"
+          if (Test-Path $tmpRoot) {
+            Get-ChildItem -Path $tmpRoot -Recurse -File -Filter "*.args.txt" | ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content -Path $_.FullName
+            }
+          } else {
+            Write-Host "Compose tmp directory not found."
+          }
+
       - name: Verify Windows Installers
         run: |
           $installers = Get-ChildItem -Path ".\desktop-app\build\compose\binaries" -Recurse -File |
