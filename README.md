@@ -30,6 +30,10 @@
   兼容旧 WebSocket 模式的入口
 - [android-app](./android-app)
   Android 原生应用工程，应用名为“音爪”
+- [desktop-app](./desktop-app)
+  Windows 桌面客户端工程，基于 Kotlin + Compose Desktop，当前已接通 health / search / download / proxy / logs
+- [shared](./shared)
+  Android / Windows 预留的共享数据模型模块
 - [music_worker_supervisor.sh](./music_worker_supervisor.sh)
   Python worker 保活脚本
 - [mihomo_supervisor.sh](./mihomo_supervisor.sh)
@@ -99,6 +103,7 @@ python3 -u /codes/music_worker/music_local_api.py
 - `GET /api/logs`
 - `GET /api/app/update`
 - `GET /api/app/apk`
+- `GET /api/app/package?platform=desktop`
 
 ## Android App
 
@@ -167,3 +172,5 @@ gradle :app:assembleRelease
 ## 文档
 
 - 详细设计与开发记录见 [docs/ANDROID_APP_DEVELOPMENT.md](./docs/ANDROID_APP_DEVELOPMENT.md)
+- Windows 客户端技术方案见 [docs/WINDOWS_DESKTOP_DEVELOPMENT.md](./docs/WINDOWS_DESKTOP_DEVELOPMENT.md)
+- Windows 安装包 GitHub Actions 工作流见 [`.github/workflows/windows-desktop-package.yml`](./.github/workflows/windows-desktop-package.yml)

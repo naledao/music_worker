@@ -34,6 +34,14 @@ android-app/captures/
 *.apk
 *.aab
 
+# Desktop / Shared Gradle
+desktop-app/.gradle/
+desktop-app/.kotlin/
+desktop-app/build/
+shared/.gradle/
+shared/.kotlin/
+shared/build/
+
 # Editor / OS
 .DS_Store
 .idea/

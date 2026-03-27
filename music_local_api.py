@@ -1,6 +1,8 @@
+import glob
 import json
 import os
 import hashlib
+import re
 import threading
 import time
 import traceback
@@ -45,6 +47,10 @@ def build_content_disposition(download_name: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
 
 
+def repo_path(*parts: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+
+
 def mihomo_request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     url = f"{MIHOMO_CONTROLLER_URL}{path}"
     headers = {}
@@ -87,29 +93,11 @@ def select_proxy(name: str) -> dict[str, Any]:
 
 
 def get_android_apk_path(build_type: str) -> str:
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "android-app",
-        "app",
-        "build",
-        "outputs",
-        "apk",
-        build_type,
-        f"app-{build_type}.apk",
-    )
+    return repo_path("android-app", "app", "build", "outputs", "apk", build_type, f"app-{build_type}.apk")
 
 
 def get_android_apk_metadata_path(build_type: str) -> str:
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "android-app",
-        "app",
-        "build",
-        "outputs",
-        "apk",
-        build_type,
-        "output-metadata.json",
-    )
+    return repo_path("android-app", "app", "build", "outputs", "apk", build_type, "output-metadata.json")
 
 
 def get_preferred_android_apk_artifacts() -> tuple[str, str]:
@@ -117,6 +105,59 @@ def get_preferred_android_apk_artifacts() -> tuple[str, str]:
     if os.path.exists(release_apk_path):
         return release_apk_path, get_android_apk_metadata_path("release")
     return get_android_apk_path("debug"), get_android_apk_metadata_path("debug")
+
+
+def get_desktop_distribution_settings() -> tuple[str, str]:
+    package_name = "YinZhaoDesktop"
+    package_version = "0.1.0"
+    build_gradle_path = repo_path("desktop-app", "build.gradle.kts")
+    if not os.path.exists(build_gradle_path):
+        return package_name, package_version
+
+    with open(build_gradle_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    package_name_match = re.search(r'val\s+desktopPackageName\s*=\s*"([^"]+)"', content)
+    package_version_match = re.search(r'val\s+desktopAppVersion\s*=\s*"([^"]+)"', content)
+    if package_name_match:
+        package_name = package_name_match.group(1).strip() or package_name
+    if package_version_match:
+        package_version = package_version_match.group(1).strip() or package_version
+    return package_name, package_version
+
+
+def guess_update_content_type(file_path: str) -> str:
+    extension = os.path.splitext(file_path)[1].lower()
+    if extension == ".msi":
+        return "application/x-msi"
+    if extension == ".exe":
+        return "application/vnd.microsoft.portable-executable"
+    if extension == ".apk":
+        return "application/vnd.android.package-archive"
+    return "application/octet-stream"
+
+
+def get_preferred_desktop_installer_artifact() -> tuple[str, str]:
+    package_name, package_version = get_desktop_distribution_settings()
+    base_dir = repo_path("desktop-app", "build", "compose", "binaries", "main")
+    preferred_candidates = [
+        os.path.join(base_dir, "msi", f"{package_name}-{package_version}.msi"),
+        os.path.join(base_dir, "exe", f"{package_name}-{package_version}.exe"),
+    ]
+    for candidate in preferred_candidates:
+        if os.path.exists(candidate):
+            return candidate, guess_update_content_type(candidate)
+
+    fallback_patterns = [
+        os.path.join(base_dir, "msi", "*.msi"),
+        os.path.join(base_dir, "exe", "*.exe"),
+    ]
+    for pattern in fallback_patterns:
+        matches = sorted(glob.glob(pattern), reverse=True)
+        if matches:
+            return matches[0], guess_update_content_type(matches[0])
+
+    raise FileNotFoundError(f"desktop installer not found under: {base_dir}")
 
 
 def sha256_file(file_path: str) -> str:
@@ -130,7 +171,7 @@ def sha256_file(file_path: str) -> str:
     return digest.hexdigest()
 
 
-def get_app_update_payload() -> dict[str, Any]:
+def get_android_app_update_payload() -> dict[str, Any]:
     apk_path, metadata_path = get_preferred_android_apk_artifacts()
     if not os.path.exists(apk_path):
         raise FileNotFoundError(f"apk not found: {apk_path}")
@@ -156,6 +197,43 @@ def get_app_update_payload() -> dict[str, Any]:
         "updatedAt": iso_ts(os.path.getmtime(apk_path)),
         "downloadPath": "/api/app/apk",
     }
+
+
+def get_desktop_app_update_payload() -> dict[str, Any]:
+    installer_path, _ = get_preferred_desktop_installer_artifact()
+    package_name, package_version = get_desktop_distribution_settings()
+    file_name = os.path.basename(installer_path)
+    return {
+        "versionCode": None,
+        "versionName": package_version,
+        "fileName": file_name,
+        "fileSize": os.path.getsize(installer_path),
+        "sha256": sha256_file(installer_path),
+        "updatedAt": iso_ts(os.path.getmtime(installer_path)),
+        "downloadPath": "/api/app/package?platform=desktop",
+    }
+
+
+def normalize_update_platform(platform_raw: str | None) -> str:
+    platform = (platform_raw or "android").strip().lower()
+    if platform in ("", "android"):
+        return "android"
+    if platform in ("desktop", "windows", "win"):
+        return "desktop"
+    raise ValueError(f"unsupported update platform: {platform_raw}")
+
+
+def get_app_update_payload(platform: str = "android") -> dict[str, Any]:
+    if platform == "desktop":
+        return get_desktop_app_update_payload()
+    return get_android_app_update_payload()
+
+
+def get_app_update_artifact(platform: str = "android") -> tuple[str, str]:
+    if platform == "desktop":
+        return get_preferred_desktop_installer_artifact()
+    apk_path, _ = get_preferred_android_apk_artifacts()
+    return apk_path, guess_update_content_type(apk_path)
 
 
 class TaskManager:
@@ -384,7 +462,30 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/app/update":
-                self._ok(get_app_update_payload())
+                try:
+                    platform = normalize_update_platform((query.get("platform") or ["android"])[0])
+                    self._ok(get_app_update_payload(platform))
+                except ValueError as e:
+                    self._error(400, str(e))
+                except FileNotFoundError as e:
+                    self._error(404, str(e))
+                return
+
+            if path == "/api/app/package":
+                try:
+                    platform = normalize_update_platform((query.get("platform") or ["android"])[0])
+                    artifact_path, content_type = get_app_update_artifact(platform)
+                except ValueError as e:
+                    self._error(400, str(e))
+                    return
+                except FileNotFoundError as e:
+                    self._error(404, str(e))
+                    return
+                self._send_file(
+                    artifact_path,
+                    os.path.basename(artifact_path),
+                    content_type=content_type,
+                )
                 return
 
             if path == "/api/app/apk":
