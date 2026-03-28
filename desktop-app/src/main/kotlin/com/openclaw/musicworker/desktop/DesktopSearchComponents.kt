@@ -50,7 +50,8 @@ private val SearchCoverSize = 48.dp
 private val SearchDurationColumnWidth = 68.dp
 private val SearchStatusColumnWidth = 92.dp
 private val SearchActionColumnWidth = 100.dp
-private val SearchCoverCache = ConcurrentHashMap<String, ImageBitmap?>()
+private val SearchCoverCache = ConcurrentHashMap<String, ImageBitmap>()
+private val SearchCoverFailedUrls = ConcurrentHashMap.newKeySet<String>()
 
 @Composable
 internal fun SearchSidebarSummary(
@@ -434,7 +435,7 @@ private fun rememberSearchCoverImage(coverUrl: String?): ImageBitmap? {
             value = null
             return@produceState
         }
-        if (value != null || SearchCoverCache.containsKey(normalizedUrl)) {
+        if (value != null || SearchCoverCache.containsKey(normalizedUrl) || SearchCoverFailedUrls.contains(normalizedUrl)) {
             return@produceState
         }
 
@@ -461,7 +462,12 @@ private suspend fun loadSearchCoverImage(url: String): ImageBitmap? {
             DesktopFileLogger.warn("search cover load failed url=$url err=${error.message.orEmpty()}")
         }.getOrNull()
 
-        SearchCoverCache[url] = image
+        if (image != null) {
+            SearchCoverFailedUrls.remove(url)
+            SearchCoverCache[url] = image
+        } else {
+            SearchCoverFailedUrls.add(url)
+        }
         image
     }
 }
