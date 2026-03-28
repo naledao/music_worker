@@ -787,6 +787,7 @@ private fun downloadButtonText(item: SearchItem, currentTask: DownloadTask?, isS
     return when {
         currentTask?.musicId == item.id && currentTask.status == "running" -> "下载中…"
         currentTask?.musicId == item.id && currentTask.status == "queued" -> "排队中…"
+        item.downloaded -> "直接保存"
         currentTask?.musicId == item.id && currentTask.status == "finished" -> "重新下载"
         currentTask?.musicId == item.id && currentTask.status == "failed" -> "重试下载"
         else -> "开始下载"
@@ -803,7 +804,7 @@ private fun buildSearchItemStatusText(
     }
 
     if (currentTask?.musicId != item.id) {
-        return "待下载"
+        return if (item.downloaded) "已存在" else "待下载"
     }
 
     return when (currentTask.status) {

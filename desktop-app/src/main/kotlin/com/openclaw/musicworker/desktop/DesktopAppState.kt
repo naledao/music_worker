@@ -521,6 +521,16 @@ class DesktopAppState(
                     )
                     _uiState.update { state ->
                         state.copy(
+                            search = if (task.status == "finished" && !task.filePath.isNullOrBlank()) {
+                                state.search.markItemDownloaded(
+                                    musicId = item.id,
+                                    filePath = task.filePath,
+                                    fileSize = task.fileSize,
+                                    downloadedAt = task.updatedAt,
+                                )
+                            } else {
+                                state.search
+                            },
                             download = DesktopDownloadUiState(
                                 currentTask = task,
                                 selectedTitle = item.title,
@@ -528,13 +538,18 @@ class DesktopAppState(
                                 isPolling = task.status in ACTIVE_TASK_STATUSES,
                                 errorMessage = null,
                             ),
-                            message = "已创建下载任务：${item.title}",
+                            message = if (task.status == "finished" && item.downloaded) {
+                                "歌曲已存在，跳过重新下载：${item.title}"
+                            } else {
+                                "已创建下载任务：${item.title}"
+                            },
                         )
                     }
 
                     if (task.status in ACTIVE_TASK_STATUSES) {
                         beginPolling(task.taskId)
                     } else {
+                        maybeExportFinishedTask(task)
                         refreshHealth()
                     }
                 }
@@ -734,6 +749,16 @@ class DesktopAppState(
                 _uiState.update { state ->
                     val sameTask = state.download.currentTask?.taskId == task.taskId
                     state.copy(
+                        search = if (task.status == "finished" && !task.filePath.isNullOrBlank()) {
+                            state.search.markItemDownloaded(
+                                musicId = task.musicId,
+                                filePath = task.filePath,
+                                fileSize = task.fileSize,
+                                downloadedAt = task.updatedAt,
+                            )
+                        } else {
+                            state.search
+                        },
                         download = if (sameTask) {
                             state.download.copy(
                                 currentTask = task,
@@ -928,6 +953,37 @@ private fun normalizedPathOrNull(path: String): Path? {
     return runCatching {
         Path.of(path).toAbsolutePath().normalize()
     }.getOrNull()
+}
+
+private fun DesktopSearchUiState.markItemDownloaded(
+    musicId: String,
+    filePath: String?,
+    fileSize: Long?,
+    downloadedAt: String?,
+): DesktopSearchUiState {
+    if (musicId.isBlank()) {
+        return this
+    }
+
+    val nextResults = results.map { item ->
+        if (item.id != musicId) {
+            item
+        } else {
+            item.copy(
+                downloaded = true,
+                downloadedFilePath = filePath ?: item.downloadedFilePath,
+                downloadedFileSize = fileSize ?: item.downloadedFileSize,
+                downloadedAt = downloadedAt ?: item.downloadedAt,
+            )
+        }
+    }
+
+    return rebuildVisibleResults(
+        results = nextResults,
+        sortMode = sortMode,
+        filterMode = filterMode,
+        preferredSelectedResultId = selectedResultId,
+    )
 }
 
 private fun DesktopSearchUiState.rebuildVisibleResults(

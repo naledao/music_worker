@@ -92,6 +92,10 @@ data class SearchItem(
     val channel: String? = null,
     val duration: Double? = null,
     val cover: String? = null,
+    val downloaded: Boolean = false,
+    val downloadedFilePath: String? = null,
+    val downloadedFileSize: Long? = null,
+    val downloadedAt: String? = null,
 )
 
 @Serializable

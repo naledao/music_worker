@@ -20,8 +20,10 @@ from music_config import (
     MIHOMO_CONTROLLER_URL,
     MIHOMO_SECRET,
     MIHOMO_SELECTOR_NAME,
+    DOWNLOAD_INDEX_DB,
     YTDLP_PROXY,
 )
+from music_download_store import DownloadedMusicStore
 from music_core import get_runtime_snapshot, log_startup_summary, logger, ytdlp_download_mp3, ytdlp_search
 
 
@@ -457,7 +459,41 @@ class TaskManager:
     def __init__(self, max_workers: int):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._active_download_tasks_by_music_id: dict[str, str] = {}
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="music-local-api")
+
+    @staticmethod
+    def _is_task_active(task: dict[str, Any] | None) -> bool:
+        if not task:
+            return False
+        return task.get("status") in {"queued", "running"}
+
+    def _pop_active_download_task_locked(self, music_id: str, task_id: str | None = None) -> None:
+        active_task_id = self._active_download_tasks_by_music_id.get(music_id)
+        if active_task_id is None:
+            return
+        if task_id is None or active_task_id == task_id:
+            self._active_download_tasks_by_music_id.pop(music_id, None)
+
+    def _get_reusable_task_locked(self, music_id: str) -> dict[str, Any] | None:
+        active_task_id = self._active_download_tasks_by_music_id.get(music_id)
+        if not active_task_id:
+            return None
+
+        task = self._tasks.get(active_task_id)
+        if not task:
+            self._active_download_tasks_by_music_id.pop(music_id, None)
+            return None
+
+        if self._is_task_active(task):
+            return self._copy_task(task)
+
+        self._active_download_tasks_by_music_id.pop(music_id, None)
+        if task.get("status") == "finished":
+            file_path = os.path.abspath((task.get("filePath") or "").strip())
+            if file_path and os.path.exists(file_path):
+                return self._copy_task(task)
+        return None
 
     def _touch(self, task: dict[str, Any]) -> None:
         task["updatedAt"] = iso_ts()
@@ -466,30 +502,69 @@ class TaskManager:
         return json.loads(json.dumps(task, ensure_ascii=False))
 
     def create_download_task(self, music_id: str) -> dict[str, Any]:
-        task_id = str(uuid.uuid4())
-        task = {
-            "taskId": task_id,
-            "type": "download",
-            "musicId": music_id,
-            "status": "queued",
-            "stage": "queued",
-            "progress": 0,
-            "createdAt": iso_ts(),
-            "updatedAt": iso_ts(),
-            "filename": None,
-            "filePath": None,
-            "fileSize": None,
-            "downloadedBytes": 0,
-            "totalBytes": None,
-            "speedBps": None,
-            "etaSec": None,
-            "strategy": None,
-            "errorMessage": None,
-            "errorClass": None,
-        }
+        music_id = (music_id or "").strip()
+        if not music_id:
+            raise ValueError("musicId is empty")
+
         with self._lock:
+            reusable_task = self._get_reusable_task_locked(music_id)
+            if reusable_task is not None:
+                logger.info(
+                    f"local api reuse active download taskId={reusable_task.get('taskId')} musicId={music_id} "
+                    f"status={reusable_task.get('status')}"
+                )
+                return reusable_task
+
+            existing_download = DOWNLOADED_MUSIC_STORE.get_download(music_id)
+            task_id = str(uuid.uuid4())
+            task = {
+                "taskId": task_id,
+                "type": "download",
+                "musicId": music_id,
+                "status": "queued",
+                "stage": "queued",
+                "progress": 0,
+                "createdAt": iso_ts(),
+                "updatedAt": iso_ts(),
+                "filename": None,
+                "filePath": None,
+                "fileSize": None,
+                "downloadedBytes": 0,
+                "totalBytes": None,
+                "speedBps": None,
+                "etaSec": None,
+                "strategy": None,
+                "errorMessage": None,
+                "errorClass": None,
+            }
             self._tasks[task_id] = task
-        self._executor.submit(self._run_download, task_id, music_id)
+
+            if existing_download:
+                task.update(
+                    status="finished",
+                    stage="finished",
+                    progress=100,
+                    filename=existing_download.get("filename"),
+                    filePath=existing_download.get("filePath"),
+                    fileSize=existing_download.get("fileSize"),
+                    strategy="sqlite-cache",
+                )
+                self._touch(task)
+                logger.info(
+                    f"local api reuse existing download taskId={task_id} musicId={music_id} "
+                    f"path={existing_download.get('filePath')}"
+                )
+                return self._copy_task(task)
+
+            self._active_download_tasks_by_music_id[music_id] = task_id
+
+        try:
+            self._executor.submit(self._run_download, task_id, music_id)
+        except Exception:
+            with self._lock:
+                self._tasks.pop(task_id, None)
+                self._pop_active_download_task_locked(music_id, task_id)
+            raise
         return self.get_task(task_id) or task
 
     def update_task(self, task_id: str, **fields: Any) -> None:
@@ -499,6 +574,8 @@ class TaskManager:
                 return
             task.update(fields)
             self._touch(task)
+            if not self._is_task_active(task):
+                self._pop_active_download_task_locked(str(task.get("musicId") or "").strip(), task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -584,14 +661,20 @@ class TaskManager:
 
         try:
             path = ytdlp_download_mp3(music_id, status_callback=on_status)
+            file_size = os.path.getsize(path)
+            recorded_download = DOWNLOADED_MUSIC_STORE.record_download(
+                music_id=music_id,
+                file_path=path,
+                downloaded_at=iso_ts(),
+            ) or {}
             self.update_task(
                 task_id,
                 status="finished",
                 stage="finished",
                 progress=100,
-                filename=os.path.basename(path),
-                filePath=path,
-                fileSize=os.path.getsize(path),
+                filename=recorded_download.get("filename") or os.path.basename(path),
+                filePath=recorded_download.get("filePath") or path,
+                fileSize=recorded_download.get("fileSize") or file_size,
                 errorMessage=None,
                 errorClass=None,
             )
@@ -607,6 +690,7 @@ class TaskManager:
             )
 
 
+DOWNLOADED_MUSIC_STORE = DownloadedMusicStore(DOWNLOAD_INDEX_DB)
 TASK_MANAGER = TaskManager(max_workers=LOCAL_API_MAX_WORKERS)
 
 
@@ -853,6 +937,7 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 except Exception:
                     limit = 30
                 results = ytdlp_search(keyword, limit)
+                DOWNLOADED_MUSIC_STORE.annotate_search_results(results)
                 for item in results:
                     if isinstance(item, dict):
                         item["cover"] = self._build_cover_proxy_url(str(item.get("cover") or "").strip() or None)

@@ -4,9 +4,11 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_music")
+STATE_DIR = os.path.join(BASE_DIR, "run", "state")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(STATE_DIR, exist_ok=True)
 
 
 WS_AUTH_TOKEN = (os.environ.get("MUSIC_WS_AUTH_TOKEN") or "").strip()
@@ -145,3 +147,7 @@ MIHOMO_SELECTOR_NAME = (os.environ.get("MUSIC_MIHOMO_SELECTOR_NAME") or "赔钱�
 LOCAL_API_HOST = os.environ.get("MUSIC_LOCAL_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
 LOCAL_API_PORT = parse_int_env("MUSIC_LOCAL_API_PORT", 18081)
 LOCAL_API_MAX_WORKERS = parse_int_env("MUSIC_LOCAL_API_MAX_WORKERS", 2)
+DOWNLOAD_INDEX_DB = (
+    os.environ.get("MUSIC_DOWNLOAD_INDEX_DB")
+    or os.path.join(STATE_DIR, "downloaded_music.sqlite3")
+).strip()
