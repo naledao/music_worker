@@ -151,3 +151,7 @@ DOWNLOAD_INDEX_DB = (
     os.environ.get("MUSIC_DOWNLOAD_INDEX_DB")
     or os.path.join(STATE_DIR, "downloaded_music.sqlite3")
 ).strip()
+PROXY_AUTH_DB = (
+    os.environ.get("MUSIC_PROXY_AUTH_DB")
+    or DOWNLOAD_INDEX_DB
+).strip()

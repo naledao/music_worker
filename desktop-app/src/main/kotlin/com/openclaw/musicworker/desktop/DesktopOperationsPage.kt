@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilledTonalButton
@@ -23,6 +24,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.openclaw.musicworker.shared.api.ProxyInfo
@@ -47,7 +50,10 @@ private enum class OperationsLogFilter(val label: String) {
 internal fun OperationsPage(
     uiState: DesktopUiState,
     onRefresh: () -> Unit,
-    onSelectProxy: (String) -> Unit,
+    onRequestProxySelection: (String) -> Unit,
+    onDismissProxySelection: () -> Unit,
+    onProxyPasswordChanged: (String) -> Unit,
+    onConfirmProxySelection: () -> Unit,
 ) {
     var proxyQuery by remember { mutableStateOf("") }
     var logFilter by remember { mutableStateOf(OperationsLogFilter.ALL) }
@@ -66,6 +72,18 @@ internal fun OperationsPage(
     val visibleLogLines = when (logFilter) {
         OperationsLogFilter.ALL -> uiState.ops.logs
         OperationsLogFilter.ERRORS -> uiState.ops.logs.filter(::isErrorLogLine)
+    }
+
+    uiState.ops.pendingProxyName?.let { pendingProxyName ->
+        ProxySwitchPasswordDialog(
+            proxyName = pendingProxyName,
+            password = uiState.ops.proxyPasswordInput,
+            errorMessage = uiState.ops.proxyPasswordError,
+            isLoading = uiState.ops.isLoading,
+            onPasswordChanged = onProxyPasswordChanged,
+            onDismiss = onDismissProxySelection,
+            onConfirm = onConfirmProxySelection,
+        )
     }
 
     Row(
@@ -96,7 +114,7 @@ internal fun OperationsPage(
                 totalOptions = allOptions.size,
                 isLoading = uiState.ops.isLoading,
                 onProxyQueryChanged = { proxyQuery = it },
-                onSelectProxy = onSelectProxy,
+                onSelectProxy = onRequestProxySelection,
             )
         }
 
@@ -112,6 +130,71 @@ internal fun OperationsPage(
             onLogFilterChanged = { logFilter = it },
         )
     }
+}
+
+@Composable
+private fun ProxySwitchPasswordDialog(
+    proxyName: String,
+    password: String,
+    errorMessage: String?,
+    isLoading: Boolean,
+    onPasswordChanged: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {
+            if (!isLoading) {
+                onDismiss()
+            }
+        },
+        title = {
+            Text(
+                text = "验证节点切换",
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "切换到节点“$proxyName”前需要输入桌面端验证密码。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = onPasswordChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("切换密码") },
+                    placeholder = { Text("输入服务端生成的密码") },
+                    singleLine = true,
+                    enabled = !isLoading,
+                    visualTransformation = PasswordVisualTransformation(),
+                    isError = !errorMessage.isNullOrBlank(),
+                    supportingText = {
+                        if (!errorMessage.isNullOrBlank()) {
+                            Text(text = errorMessage)
+                        }
+                    },
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isLoading,
+            ) {
+                Text(text = "取消")
+            }
+        },
+        confirmButton = {
+            FilledTonalButton(
+                onClick = onConfirm,
+                enabled = !isLoading,
+            ) {
+                Text(text = if (isLoading) "验证中…" else "验证并切换")
+            }
+        },
+    )
 }
 
 @Composable

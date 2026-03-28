@@ -118,6 +118,8 @@ data class DownloadRequest(
 @Serializable
 data class ProxySelectRequest(
     val name: String,
+    val password: String? = null,
+    val client: String? = null,
 )
 
 @Serializable

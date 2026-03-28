@@ -74,6 +74,9 @@ data class DesktopOpsUiState(
     val proxy: ProxyInfo? = null,
     val logs: List<String> = emptyList(),
     val errorMessage: String? = null,
+    val pendingProxyName: String? = null,
+    val proxyPasswordInput: String = "",
+    val proxyPasswordError: String? = null,
 )
 
 data class DesktopUpdateUiState(
@@ -675,19 +678,79 @@ class DesktopAppState(
         }
     }
 
-    fun selectProxy(name: String) {
+    fun requestProxySelection(name: String) {
+        val target = name.trim()
+        if (target.isBlank()) {
+            return
+        }
+
+        _uiState.update { state ->
+            state.copy(
+                ops = state.ops.copy(
+                    pendingProxyName = target,
+                    proxyPasswordInput = "",
+                    proxyPasswordError = null,
+                    errorMessage = null,
+                ),
+                message = null,
+            )
+        }
+    }
+
+    fun dismissProxySelection() {
+        _uiState.update { state ->
+            state.copy(
+                ops = state.ops.copy(
+                    pendingProxyName = null,
+                    proxyPasswordInput = "",
+                    proxyPasswordError = null,
+                ),
+            )
+        }
+    }
+
+    fun updateProxyPasswordInput(value: String) {
+        _uiState.update { state ->
+            state.copy(
+                ops = state.ops.copy(
+                    proxyPasswordInput = value,
+                    proxyPasswordError = null,
+                ),
+            )
+        }
+    }
+
+    fun confirmProxySelection() {
+        val target = _uiState.value.ops.pendingProxyName?.trim().orEmpty()
+        val password = _uiState.value.ops.proxyPasswordInput
+
+        if (target.isBlank()) {
+            return
+        }
+        if (password.isBlank()) {
+            _uiState.update { state ->
+                state.copy(
+                    ops = state.ops.copy(
+                        proxyPasswordError = "请输入节点切换密码",
+                    ),
+                )
+            }
+            return
+        }
+
         scope.launch {
             _uiState.update { state ->
                 state.copy(
                     ops = state.ops.copy(
                         isLoading = true,
                         errorMessage = null,
+                        proxyPasswordError = null,
                     ),
                     message = null,
                 )
             }
 
-            runCatching { apiClient.selectProxy(_uiState.value.serverConfig, name) }
+            runCatching { apiClient.selectProxy(_uiState.value.serverConfig, target, password) }
                 .onSuccess { proxy ->
                     _uiState.update { state ->
                         state.copy(
@@ -695,6 +758,9 @@ class DesktopAppState(
                                 isLoading = false,
                                 proxy = proxy,
                                 errorMessage = null,
+                                pendingProxyName = null,
+                                proxyPasswordInput = "",
+                                proxyPasswordError = null,
                             ),
                             health = state.health.copy(
                                 health = state.health.health?.copy(proxy = proxy),
@@ -704,12 +770,14 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
-                    logFailure("select proxy failed", error, "target=$name baseUrl=${_uiState.value.serverConfig.baseUrl}")
+                    val errorMessage = error.message ?: "切换节点失败"
+                    logFailure("select proxy failed", error, "target=$target baseUrl=${_uiState.value.serverConfig.baseUrl}")
                     _uiState.update { state ->
                         state.copy(
                             ops = state.ops.copy(
                                 isLoading = false,
-                                errorMessage = error.message ?: "切换节点失败",
+                                errorMessage = errorMessage,
+                                proxyPasswordError = errorMessage,
                             ),
                         )
                     }

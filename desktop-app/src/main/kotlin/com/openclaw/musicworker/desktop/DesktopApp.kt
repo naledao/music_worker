@@ -110,7 +110,10 @@ fun DesktopApp() {
                 DesktopPage.OPERATIONS -> OperationsPage(
                     uiState = uiState,
                     onRefresh = appState::refreshOperations,
-                    onSelectProxy = appState::selectProxy,
+                    onRequestProxySelection = appState::requestProxySelection,
+                    onDismissProxySelection = appState::dismissProxySelection,
+                    onProxyPasswordChanged = appState::updateProxyPasswordInput,
+                    onConfirmProxySelection = appState::confirmProxySelection,
                 )
                 DesktopPage.SETTINGS -> SettingsPage(
                     uiState = uiState,

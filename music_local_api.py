@@ -21,9 +21,11 @@ from music_config import (
     MIHOMO_SECRET,
     MIHOMO_SELECTOR_NAME,
     DOWNLOAD_INDEX_DB,
+    PROXY_AUTH_DB,
     YTDLP_PROXY,
 )
 from music_download_store import DownloadedMusicStore
+from music_proxy_auth_store import ProxyAuthStore
 from music_core import get_runtime_snapshot, log_startup_summary, logger, ytdlp_download_mp3, ytdlp_search
 
 
@@ -691,6 +693,7 @@ class TaskManager:
 
 
 DOWNLOADED_MUSIC_STORE = DownloadedMusicStore(DOWNLOAD_INDEX_DB)
+PROXY_AUTH_STORE = ProxyAuthStore(PROXY_AUTH_DB)
 TASK_MANAGER = TaskManager(max_workers=LOCAL_API_MAX_WORKERS)
 
 
@@ -955,8 +958,13 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
 
             if path == "/api/proxy/select":
                 name = (payload.get("name") or "").strip()
+                client = (payload.get("client") or "").strip().lower()
+                password = (payload.get("password") or "").strip()
                 if not name:
                     self._error(400, "name is empty")
+                    return
+                if client == "desktop" and not PROXY_AUTH_STORE.verify_password(password):
+                    self._error(403, "桌面端节点切换密码错误")
                     return
                 self._ok(select_proxy(name))
                 return
@@ -969,6 +977,15 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
 
 
 def run_server() -> None:
+    proxy_auth = PROXY_AUTH_STORE.ensure_password(iso_ts())
+    if proxy_auth.get("generated"):
+        logger.warning(
+            "desktop proxy switch password generated db=%s password=%s",
+            PROXY_AUTH_DB,
+            proxy_auth.get("password"),
+        )
+    else:
+        logger.info("desktop proxy switch password loaded db=%s", PROXY_AUTH_DB)
     log_startup_summary()
     logger.info(
         f"music_local_api starting host={LOCAL_API_HOST} port={LOCAL_API_PORT} "

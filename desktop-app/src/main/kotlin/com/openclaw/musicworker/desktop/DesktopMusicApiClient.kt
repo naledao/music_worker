@@ -107,10 +107,14 @@ class DesktopMusicApiClient {
         return decodePayload<LogLinesPayload>(rawBody).lines
     }
 
-    suspend fun selectProxy(config: ApiServerConfig, name: String): ProxyInfo {
+    suspend fun selectProxy(config: ApiServerConfig, name: String, password: String): ProxyInfo {
         val rawBody = postJson(
             url = "${config.baseUrl}/api/proxy/select",
-            body = ProxySelectRequest(name = name),
+            body = ProxySelectRequest(
+                name = name,
+                password = password,
+                client = "desktop",
+            ),
         )
         return decodePayload(rawBody)
     }
