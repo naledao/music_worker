@@ -9,6 +9,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.io.path.createDirectories
@@ -78,19 +79,35 @@ class DesktopUpdateManager {
     }
 
     fun openInstaller(filePath: String) {
-        val path = Path.of(filePath)
+        val path = Path.of(filePath).toAbsolutePath().normalize()
         if (!path.exists()) {
             throw IOException("安装包不存在：$filePath")
         }
-        if (!Desktop.isDesktopSupported()) {
-            throw IOException("当前环境不支持直接打开安装包")
+
+        val failures = mutableListOf<String>()
+        if (isWindows()) {
+            runCatching { openInstallerOnWindows(path) }
+                .onSuccess { return }
+                .onFailure { error ->
+                    failures += error.message ?: error.javaClass.simpleName
+                }
         }
 
-        val desktop = Desktop.getDesktop()
-        if (!desktop.isSupported(Desktop.Action.OPEN)) {
-            throw IOException("当前环境不支持直接打开安装包")
-        }
-        desktop.open(path.toFile())
+        runCatching { openInstallerWithDesktop(path) }
+            .onSuccess { return }
+            .onFailure { error ->
+                failures += error.message ?: error.javaClass.simpleName
+            }
+
+        throw IOException(
+            buildString {
+                append("打开安装包失败")
+                if (failures.isNotEmpty()) {
+                    append("：")
+                    append(failures.joinToString(" | "))
+                }
+            },
+        )
     }
 
     private fun clearOldInstallers(directory: Path, keepFileName: String) {
@@ -132,10 +149,66 @@ class DesktopUpdateManager {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
+    private fun openInstallerWithDesktop(path: Path) {
+        if (!Desktop.isDesktopSupported()) {
+            throw IOException("当前环境不支持直接打开安装包")
+        }
+
+        val desktop = Desktop.getDesktop()
+        if (!desktop.isSupported(Desktop.Action.OPEN)) {
+            throw IOException("当前环境不支持直接打开安装包")
+        }
+        desktop.open(path.toFile())
+    }
+
+    private fun openInstallerOnWindows(path: Path) {
+        val installerPath = path.toString()
+        val attempts = listOf(
+            listOf("cmd", "/c", "start", "", installerPath),
+            listOf(
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process -LiteralPath '${escapePowerShellLiteral(installerPath)}'",
+            ),
+        )
+
+        val failures = mutableListOf<String>()
+        attempts.forEach { command ->
+            val process = ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
+
+            val finished = process.waitFor(3, TimeUnit.SECONDS)
+            if (!finished) {
+                return
+            }
+            if (process.exitValue() == 0) {
+                return
+            }
+
+            val output = process.inputStream.bufferedReader().use { it.readText().trim() }
+            failures += "${command.first()}: ${output.ifBlank { "exit ${process.exitValue()}" }}"
+        }
+
+        throw IOException(failures.joinToString(" | ").ifBlank { "Windows 打开命令执行失败" })
+    }
+
+    private fun escapePowerShellLiteral(value: String): String {
+        return value.replace("'", "''")
+    }
+
+    private fun isWindows(): Boolean {
+        return System.getProperty("os.name")
+            ?.lowercase(Locale.US)
+            ?.contains("win") == true
+    }
+
     private companion object {
         const val PROP_VERSION_NAME = "musicworker.desktop.version"
         const val PROP_VERSION_CODE = "musicworker.desktop.versionCode"
-        const val DEFAULT_VERSION_NAME = "0.1.1"
-        const val DEFAULT_VERSION_CODE = 2L
+        const val DEFAULT_VERSION_NAME = "0.1.4"
+        const val DEFAULT_VERSION_CODE = 5L
     }
 }
