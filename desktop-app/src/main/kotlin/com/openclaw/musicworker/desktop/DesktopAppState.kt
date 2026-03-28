@@ -7,6 +7,7 @@ import com.openclaw.musicworker.shared.api.ProxyInfo
 import com.openclaw.musicworker.shared.api.SearchItem
 import com.openclaw.musicworker.shared.config.ApiServerConfig
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -96,7 +97,10 @@ class DesktopAppState(
     private val apiClient: DesktopMusicApiClient = DesktopMusicApiClient(),
     private val updateManager: DesktopUpdateManager = DesktopUpdateManager(),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        DesktopFileLogger.error("unhandled coroutine exception in DesktopAppState", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private var pollJob: Job? = null
     private var pollingTaskId: String? = null
 
@@ -112,6 +116,7 @@ class DesktopAppState(
     val uiState: StateFlow<DesktopUiState> = _uiState.asStateFlow()
 
     fun initialize() {
+        DesktopFileLogger.info("DesktopAppState initialized baseUrl=${_uiState.value.serverConfig.baseUrl}")
         refreshHealth()
         refreshOperations()
         refreshLatestTask()
@@ -165,6 +170,7 @@ class DesktopAppState(
     fun saveConfig() {
         val config = _uiState.value.serverConfig
         settingsStore.save(config)
+        DesktopFileLogger.info("desktop API config updated baseUrl=${config.baseUrl}")
         stopPolling()
         _uiState.update { state ->
             state.copy(
@@ -208,6 +214,7 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure("health check failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
                     _uiState.update { state ->
                         state.copy(
                             health = DesktopHealthUiState(errorMessage = error.message ?: "健康检查失败"),
@@ -256,6 +263,7 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure("update check failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
                     _uiState.update { state ->
                         state.copy(
                             update = state.update.copy(
@@ -279,6 +287,7 @@ class DesktopAppState(
         updateState.downloadedInstallerPath?.let { installerPath ->
             runCatching { updateManager.openInstaller(installerPath) }
                 .onSuccess {
+                    DesktopFileLogger.info("opened installer path=$installerPath")
                     _uiState.update { state ->
                         state.copy(
                             update = state.update.copy(
@@ -289,6 +298,7 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure("open installer failed", error, "path=$installerPath")
                     _uiState.update { state ->
                         state.copy(
                             update = state.update.copy(
@@ -302,6 +312,7 @@ class DesktopAppState(
 
         val updateInfo = updateState.availableUpdate
         if (updateInfo == null) {
+            DesktopFileLogger.warn("downloadOrOpenAppUpdate ignored because no update info is available")
             _uiState.update { state ->
                 state.copy(
                     update = state.update.copy(
@@ -342,6 +353,9 @@ class DesktopAppState(
                 }
             }
                 .onSuccess { downloadedUpdate ->
+                    DesktopFileLogger.info(
+                        "desktop update downloaded file=${downloadedUpdate.fileName} path=${downloadedUpdate.filePath}",
+                    )
                     _uiState.update { state ->
                         state.copy(
                             update = state.update.copy(
@@ -357,6 +371,11 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure(
+                        "download desktop update failed",
+                        error,
+                        "file=${updateInfo.fileName} baseUrl=${_uiState.value.serverConfig.baseUrl}",
+                    )
                     _uiState.update { state ->
                         state.copy(
                             update = state.update.copy(
@@ -372,6 +391,7 @@ class DesktopAppState(
     fun search() {
         val keyword = _uiState.value.search.input.trim()
         if (keyword.isBlank()) {
+            DesktopFileLogger.warn("search ignored because keyword is blank")
             _uiState.update { state ->
                 state.copy(
                     search = state.search.copy(errorMessage = "请输入搜索关键词"),
@@ -394,6 +414,7 @@ class DesktopAppState(
 
             runCatching { apiClient.search(_uiState.value.serverConfig, keyword) }
                 .onSuccess { results ->
+                    DesktopFileLogger.info("search completed keyword=$keyword resultCount=${results.size}")
                     _uiState.update { state ->
                         state.copy(
                             search = state.search.copy(
@@ -406,6 +427,7 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure("search failed", error, "keyword=$keyword baseUrl=${_uiState.value.serverConfig.baseUrl}")
                     _uiState.update { state ->
                         state.copy(
                             search = state.search.copy(
@@ -422,6 +444,7 @@ class DesktopAppState(
     fun startDownload(item: SearchItem) {
         val currentDownload = _uiState.value.download
         if (currentDownload.isStarting || currentDownload.currentTask?.status in ACTIVE_TASK_STATUSES) {
+            DesktopFileLogger.warn("download ignored because another task is active itemId=${item.id}")
             _uiState.update { state ->
                 state.copy(
                     download = state.download.copy(
@@ -446,6 +469,9 @@ class DesktopAppState(
 
             runCatching { apiClient.startDownload(_uiState.value.serverConfig, item.id) }
                 .onSuccess { task ->
+                    DesktopFileLogger.info(
+                        "download task created taskId=${task.taskId} musicId=${item.id} title=${item.title}",
+                    )
                     _uiState.update { state ->
                         state.copy(
                             download = DesktopDownloadUiState(
@@ -466,6 +492,11 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure(
+                        "create download task failed",
+                        error,
+                        "musicId=${item.id} title=${item.title} baseUrl=${_uiState.value.serverConfig.baseUrl}",
+                    )
                     _uiState.update { state ->
                         state.copy(
                             download = DesktopDownloadUiState(
@@ -510,6 +541,7 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure("refresh latest task failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
                     stopPolling()
                     _uiState.update { state ->
                         state.copy(
@@ -558,6 +590,13 @@ class DesktopAppState(
                     ),
                 )
             }
+
+            proxyResult.exceptionOrNull()?.let { error ->
+                logFailure("load current proxy failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
+            }
+            logsResult.exceptionOrNull()?.let { error ->
+                logFailure("load backend logs failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
+            }
         }
     }
 
@@ -590,6 +629,7 @@ class DesktopAppState(
                     }
                 }
                 .onFailure { error ->
+                    logFailure("select proxy failed", error, "target=$name baseUrl=${_uiState.value.serverConfig.baseUrl}")
                     _uiState.update { state ->
                         state.copy(
                             ops = state.ops.copy(
@@ -614,6 +654,9 @@ class DesktopAppState(
                 val taskResult = runCatching { apiClient.getTask(_uiState.value.serverConfig, taskId) }
                 if (taskResult.isFailure) {
                     val error = taskResult.exceptionOrNull()
+                    error?.let {
+                        logFailure("poll task failed", it, "taskId=$taskId baseUrl=${_uiState.value.serverConfig.baseUrl}")
+                    }
                     stopPolling()
                     _uiState.update { state ->
                         state.copy(
@@ -645,6 +688,9 @@ class DesktopAppState(
                 }
 
                 if (task.status !in ACTIVE_TASK_STATUSES) {
+                    DesktopFileLogger.info(
+                        "download task finished taskId=${task.taskId} status=${task.status} stage=${task.stage} file=${task.filename.orEmpty()}",
+                    )
                     stopPolling()
                     refreshHealth()
                     break
@@ -662,8 +708,20 @@ class DesktopAppState(
     }
 
     fun close() {
+        DesktopFileLogger.info("DesktopAppState closing")
         stopPolling()
         scope.cancel()
+    }
+
+    private fun logFailure(action: String, error: Throwable, context: String? = null) {
+        val message = buildString {
+            append(action)
+            context?.takeIf { it.isNotBlank() }?.let {
+                append(" | ")
+                append(it)
+            }
+        }
+        DesktopFileLogger.error(message, error)
     }
 
     private companion object {

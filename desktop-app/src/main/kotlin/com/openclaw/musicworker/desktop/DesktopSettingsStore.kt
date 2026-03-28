@@ -27,6 +27,8 @@ class DesktopSettingsStore {
             configFile.inputStream().use { input ->
                 json.decodeFromString<DesktopSettingsData>(input.readBytes().decodeToString()).toApiServerConfig()
             }
+        }.onFailure { error ->
+            DesktopFileLogger.error("failed to load desktop config path=$configFile", error)
         }.getOrElse { ApiServerConfig() }
     }
 
@@ -36,6 +38,7 @@ class DesktopSettingsStore {
         configFile.outputStream().use { output ->
             output.write(payload.encodeToByteArray())
         }
+        DesktopFileLogger.info("saved desktop config path=$configFile baseUrl=${config.baseUrl}")
     }
 }
 

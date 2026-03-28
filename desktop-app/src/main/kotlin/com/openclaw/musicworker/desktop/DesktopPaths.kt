@@ -21,4 +21,8 @@ object DesktopPaths {
             configDir().resolve("app-updates")
         }
     }
+
+    fun logsDir(): Path = configDir().resolve("logs")
+
+    fun desktopLogFile(): Path = logsDir().resolve("desktop.log")
 }

@@ -8,21 +8,30 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import java.awt.Dimension
 
-fun main() = application {
-    val windowState = rememberWindowState(
-        width = 1400.dp,
-        height = 920.dp,
-    )
+fun main() {
+    DesktopFileLogger.installGlobalHandlers()
+    DesktopFileLogger.info("desktop app launching")
 
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "音爪",
-        icon = painterResource("desktop-icon.png"),
-        state = windowState,
-    ) {
-        LaunchedEffect(Unit) {
-            window.minimumSize = Dimension(1280, 820)
+    application {
+        val windowState = rememberWindowState(
+            width = 1400.dp,
+            height = 920.dp,
+        )
+
+        Window(
+            onCloseRequest = {
+                DesktopFileLogger.info("desktop app closing by window request")
+                exitApplication()
+            },
+            title = "音爪",
+            icon = painterResource("desktop-icon.png"),
+            state = windowState,
+        ) {
+            LaunchedEffect(Unit) {
+                window.minimumSize = Dimension(1280, 820)
+                DesktopFileLogger.info("main window initialized")
+            }
+            DesktopApp()
         }
-        DesktopApp()
     }
 }

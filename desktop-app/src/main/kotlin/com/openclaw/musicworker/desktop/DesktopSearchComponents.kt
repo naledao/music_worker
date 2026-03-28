@@ -457,6 +457,8 @@ private suspend fun loadSearchCoverImage(url: String): ImageBitmap? {
             connection.getInputStream().use { input ->
                 input.readBytes().decodeToImageBitmap()
             }
+        }.onFailure { error ->
+            DesktopFileLogger.warn("search cover load failed url=$url err=${error.message.orEmpty()}")
         }.getOrNull()
 
         SearchCoverCache[url] = image
