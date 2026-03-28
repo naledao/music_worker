@@ -1,6 +1,7 @@
 package com.openclaw.musicworker.desktop
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,19 +27,30 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.decodeToImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.openclaw.musicworker.shared.api.DownloadTask
 import com.openclaw.musicworker.shared.api.SearchItem
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
+private val SearchCoverColumnWidth = 64.dp
+private val SearchCoverSize = 48.dp
 private val SearchDurationColumnWidth = 68.dp
 private val SearchStatusColumnWidth = 92.dp
 private val SearchActionColumnWidth = 100.dp
+private val SearchCoverCache = ConcurrentHashMap<String, ImageBitmap?>()
 
 @Composable
 internal fun SearchSidebarSummary(
@@ -246,6 +259,12 @@ private fun SearchResultRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            SearchResultCover(
+                coverUrl = item.cover,
+                title = item.title,
+                modifier = Modifier.width(SearchCoverColumnWidth),
+            )
+
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -312,6 +331,16 @@ internal fun SearchResultHeaderRow() {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(
+                modifier = Modifier.width(SearchCoverColumnWidth),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "封面",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = "歌曲 / 频道",
                 modifier = Modifier.weight(1f),
@@ -346,6 +375,98 @@ internal fun SearchResultHeaderRow() {
             }
         }
     }
+}
+
+@Composable
+private fun SearchResultCover(
+    coverUrl: String?,
+    title: String,
+    modifier: Modifier = Modifier,
+) {
+    val image = rememberSearchCoverImage(coverUrl)
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f)),
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Box(
+                modifier = Modifier.size(SearchCoverSize),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (image != null) {
+                    Image(
+                        bitmap = image,
+                        contentDescription = "$title 封面",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    Text(
+                        text = buildSearchCoverFallbackText(title),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberSearchCoverImage(coverUrl: String?): ImageBitmap? {
+    val normalizedUrl = remember(coverUrl) { coverUrl?.trim().orEmpty() }
+    val cachedImage = if (normalizedUrl.isBlank()) {
+        null
+    } else {
+        SearchCoverCache[normalizedUrl]
+    }
+    val image by produceState(
+        initialValue = cachedImage,
+        key1 = normalizedUrl,
+    ) {
+        if (normalizedUrl.isBlank()) {
+            value = null
+            return@produceState
+        }
+        if (value != null || SearchCoverCache.containsKey(normalizedUrl)) {
+            return@produceState
+        }
+
+        value = loadSearchCoverImage(normalizedUrl)
+    }
+    return image
+}
+
+private suspend fun loadSearchCoverImage(url: String): ImageBitmap? {
+    return withContext(Dispatchers.IO) {
+        val image = runCatching {
+            val connection = URL(url).openConnection().apply {
+                connectTimeout = 5000
+                readTimeout = 5000
+                setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
+            }
+            connection.getInputStream().use { input ->
+                input.readBytes().decodeToImageBitmap()
+            }
+        }.getOrNull()
+
+        SearchCoverCache[url] = image
+        image
+    }
+}
+
+private fun buildSearchCoverFallbackText(title: String): String {
+    val firstVisible = title.firstOrNull { !it.isWhitespace() } ?: return "♪"
+    return firstVisible.uppercaseChar().toString()
 }
 
 @Composable
