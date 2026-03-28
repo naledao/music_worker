@@ -62,6 +62,20 @@ class DesktopMusicApiClient {
         return decodePayload(rawBody)
     }
 
+    suspend fun downloadTaskFile(
+        config: ApiServerConfig,
+        taskId: String,
+        outputStream: OutputStream,
+        onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        downloadBinary(
+            url = "${config.baseUrl}/api/files/$taskId",
+            outputStream = outputStream,
+            expectedContentTypes = listOf("audio/", "application/octet-stream"),
+            onProgress = onProgress,
+        )
+    }
+
     suspend fun search(config: ApiServerConfig, keyword: String, limit: Int = 20): List<SearchItem> {
         val rawBody = postJson(
             url = "${config.baseUrl}/api/search",

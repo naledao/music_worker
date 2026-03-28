@@ -50,7 +50,9 @@ private enum class StatusChipTone {
 fun DesktopApp() {
     val appState = remember { DesktopAppState() }
     val uiState by appState.uiState.collectAsState()
-    val hasActiveDownload = uiState.download.isStarting || uiState.download.currentTask?.status in setOf("queued", "running")
+    val hasActiveDownload = uiState.download.isStarting ||
+        uiState.download.isExporting ||
+        uiState.download.currentTask?.status in setOf("queued", "running")
 
     LaunchedEffect(appState) {
         appState.initialize()
@@ -115,6 +117,11 @@ fun DesktopApp() {
                     onUpdateHost = appState::updateHost,
                     onUpdatePort = appState::updatePort,
                     onSaveConfig = appState::saveConfig,
+                    onPickDownloadDirectory = {
+                        DesktopDirectoryPicker.pickDirectory(uiState.downloadDirectoryPath)
+                            ?.let(appState::setDownloadDirectory)
+                    },
+                    onResetDownloadDirectory = appState::resetDownloadDirectory,
                     onRefreshHealth = appState::refreshHealth,
                     onCheckUpdate = appState::checkAppUpdate,
                     onDownloadOrOpenUpdate = appState::downloadOrOpenAppUpdate,
@@ -342,6 +349,47 @@ private fun TaskSidebar(
                 }
                 task.filePath?.let {
                     Text(text = "服务端路径：$it", style = MaterialTheme.typography.bodySmall)
+                }
+
+                DesktopInsetPanel(title = "Windows 本地保存") {
+                    DesktopFactRow(
+                        label = "目录",
+                        value = uiState.downloadDirectoryPath,
+                    )
+                    if (uiState.download.isExporting) {
+                        val exportProgress = uiState.download.exportTotalBytes
+                            ?.takeIf { it > 0L }
+                            ?.let { totalBytes ->
+                                (uiState.download.exportDownloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                            }
+                        if (exportProgress != null) {
+                            LinearProgressIndicator(
+                                progress = { exportProgress },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                text = "保存进度：${(exportProgress * 100).toInt()}%  " +
+                                    "${formatBytes(uiState.download.exportDownloadedBytes)} / " +
+                                    "${formatBytes(uiState.download.exportTotalBytes ?: 0L)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text(
+                                text = "已保存：${formatBytes(uiState.download.exportDownloadedBytes)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    uiState.download.savedFilePath?.let {
+                        DesktopFactRow(label = "本地路径", value = it)
+                    }
+                    uiState.download.exportMessage?.let {
+                        Text(text = it, color = MaterialTheme.colorScheme.primary)
+                    }
+                    uiState.download.exportErrorMessage?.let {
+                        Text(text = it, color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
 
@@ -670,6 +718,8 @@ private fun SettingsPage(
     onUpdateHost: (String) -> Unit,
     onUpdatePort: (String) -> Unit,
     onSaveConfig: () -> Unit,
+    onPickDownloadDirectory: () -> Unit,
+    onResetDownloadDirectory: () -> Unit,
     onRefreshHealth: () -> Unit,
     onCheckUpdate: () -> Unit,
     onDownloadOrOpenUpdate: () -> Unit,
@@ -857,6 +907,41 @@ private fun SettingsPage(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(text = "保存并刷新状态")
+                }
+            }
+
+            DesktopSectionPanel(
+                title = "Windows 保存目录",
+                subtitle = "下载完成后，MP3 会自动保存到这里。",
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                DesktopInsetPanel(title = "当前目录") {
+                    DesktopFactRow(
+                        label = "模式",
+                        value = if (uiState.hasCustomDownloadDirectory) "自定义目录" else "默认下载目录",
+                    )
+                    DesktopFactRow(
+                        label = "路径",
+                        value = uiState.downloadDirectoryPath,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = onPickDownloadDirectory,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(text = "选择目录")
+                    }
+                    OutlinedButton(
+                        onClick = onResetDownloadDirectory,
+                        enabled = uiState.hasCustomDownloadDirectory,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(text = "恢复默认")
+                    }
                 }
             }
 

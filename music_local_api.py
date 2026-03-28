@@ -20,6 +20,7 @@ from music_config import (
     MIHOMO_CONTROLLER_URL,
     MIHOMO_SECRET,
     MIHOMO_SELECTOR_NAME,
+    YTDLP_PROXY,
 )
 from music_core import get_runtime_snapshot, log_startup_summary, logger, ytdlp_download_mp3, ytdlp_search
 
@@ -49,6 +50,58 @@ def build_content_disposition(download_name: str) -> str:
 
 def repo_path(*parts: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+
+
+ALLOWED_COVER_HOST_SUFFIXES = (
+    "ytimg.com",
+    "ggpht.com",
+    "googleusercontent.com",
+)
+
+
+def is_allowed_cover_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit((url or "").strip())
+    except Exception:
+        return False
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_COVER_HOST_SUFFIXES)
+
+
+def fetch_cover_via_proxy(url: str) -> tuple[bytes, str]:
+    if not is_allowed_cover_url(url):
+        raise ValueError("unsupported cover url")
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        },
+    )
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler(
+            {
+                "http": YTDLP_PROXY,
+                "https": YTDLP_PROXY,
+            }
+        )
+    ) if YTDLP_PROXY else urllib.request.build_opener()
+
+    with opener.open(request, timeout=15) as resp:
+        body = resp.read()
+        content_type = (resp.headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip()
+    if not body:
+        raise FileNotFoundError("empty cover response")
+    return body, content_type
 
 
 def mihomo_request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
@@ -571,6 +624,15 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, status_code: int, body: bytes, content_type: str, cache_control: str | None = None) -> None:
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_file(self, file_path: str, download_name: str, content_type: str = "application/octet-stream") -> None:
         file_size = os.path.getsize(file_path)
         self.send_response(200)
@@ -599,6 +661,41 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
 
     def _error(self, status_code: int, message: str) -> None:
         self._send_json(status_code, {"ok": False, "payload": {"message": message}})
+
+    def _request_scheme(self) -> str:
+        forwarded = (self.headers.get("Forwarded") or "").strip()
+        if forwarded:
+            for item in forwarded.split(";"):
+                key, _, value = item.partition("=")
+                if key.strip().lower() == "proto":
+                    proto = value.strip().strip('"').lower()
+                    if proto:
+                        return proto
+
+        forwarded_proto = (self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+        if forwarded_proto:
+            return forwarded_proto
+        return "http"
+
+    def _request_host(self) -> str:
+        forwarded_host = (self.headers.get("X-Forwarded-Host") or "").split(",", 1)[0].strip()
+        if forwarded_host:
+            return forwarded_host
+
+        host = (self.headers.get("Host") or "").strip()
+        if host:
+            return host
+        return f"{LOCAL_API_HOST}:{LOCAL_API_PORT}"
+
+    def _request_base_url(self) -> str:
+        return f"{self._request_scheme()}://{self._request_host()}"
+
+    def _build_cover_proxy_url(self, source_url: str | None) -> str | None:
+        if not source_url or not is_allowed_cover_url(source_url):
+            return source_url
+
+        encoded_url = urllib.parse.quote(source_url, safe="")
+        return f"{self._request_base_url()}/api/cover?url={encoded_url}"
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlsplit(self.path)
@@ -711,6 +808,27 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 self._ok({"lines": [line.rstrip("\n") for line in content]})
                 return
 
+            if path == "/api/cover":
+                source_url = ((query.get("url") or [""])[0] or "").strip()
+                if not source_url:
+                    self._error(400, "cover url is empty")
+                    return
+                try:
+                    body, content_type = fetch_cover_via_proxy(source_url)
+                except ValueError as e:
+                    self._error(400, str(e))
+                    return
+                except FileNotFoundError as e:
+                    self._error(404, str(e))
+                    return
+                self._send_bytes(
+                    200,
+                    body,
+                    content_type=content_type,
+                    cache_control="public, max-age=3600",
+                )
+                return
+
             self._error(404, f"unknown path: {path}")
         except Exception as e:
             logger.error(f"local api GET failed path={path} err={e}")
@@ -735,6 +853,9 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 except Exception:
                     limit = 30
                 results = ytdlp_search(keyword, limit)
+                for item in results:
+                    if isinstance(item, dict):
+                        item["cover"] = self._build_cover_proxy_url(str(item.get("cover") or "").strip() or None)
                 self._ok({"keyword": keyword, "results": results})
                 return
 

@@ -2,6 +2,7 @@ package com.openclaw.musicworker.desktop
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,8 +34,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.decodeToImageBitmap
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,16 +47,25 @@ import com.openclaw.musicworker.shared.api.DownloadTask
 import com.openclaw.musicworker.shared.api.SearchItem
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.awt.Cursor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private val SearchCoverColumnWidth = 64.dp
 private val SearchCoverSize = 48.dp
+private val SearchPreviewMaxWidthFraction = 0.82f
+private val SearchPreviewMaxHeightFraction = 0.8f
 private val SearchDurationColumnWidth = 68.dp
 private val SearchStatusColumnWidth = 92.dp
 private val SearchActionColumnWidth = 100.dp
 private val SearchCoverCache = ConcurrentHashMap<String, ImageBitmap>()
 private val SearchCoverFailedUrls = ConcurrentHashMap.newKeySet<String>()
+private val SearchCoverPointerIcon = PointerIcon(Cursor(Cursor.HAND_CURSOR))
+
+internal data class SearchCoverPreview(
+    val title: String,
+    val coverUrl: String?,
+)
 
 @Composable
 internal fun SearchSidebarSummary(
@@ -197,6 +211,7 @@ internal fun SearchResultsList(
     hasActiveDownload: Boolean,
     onSelectResult: (String) -> Unit,
     onStartDownload: (SearchItem) -> Unit,
+    onPreviewCover: (SearchCoverPreview) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -214,6 +229,15 @@ internal fun SearchResultsList(
                 hasActiveDownload = hasActiveDownload,
                 onSelect = { onSelectResult(item.id) },
                 onStartDownload = { onStartDownload(item) },
+                onPreviewCover = {
+                    onSelectResult(item.id)
+                    onPreviewCover(
+                        SearchCoverPreview(
+                            title = item.title,
+                            coverUrl = item.cover,
+                        ),
+                    )
+                },
             )
         }
     }
@@ -228,6 +252,7 @@ private fun SearchResultRow(
     hasActiveDownload: Boolean,
     onSelect: () -> Unit,
     onStartDownload: () -> Unit,
+    onPreviewCover: () -> Unit,
 ) {
     val hoverInteractionSource = remember { MutableInteractionSource() }
     val isHovered by hoverInteractionSource.collectIsHoveredAsState()
@@ -264,6 +289,7 @@ private fun SearchResultRow(
                 coverUrl = item.cover,
                 title = item.title,
                 modifier = Modifier.width(SearchCoverColumnWidth),
+                onClick = onPreviewCover,
             )
 
             Column(
@@ -383,11 +409,14 @@ private fun SearchResultCover(
     coverUrl: String?,
     title: String,
     modifier: Modifier = Modifier,
+    onClick: () -> Unit,
 ) {
     val image = rememberSearchCoverImage(coverUrl)
 
     Box(
-        modifier = modifier,
+        modifier = modifier
+            .pointerHoverIcon(SearchCoverPointerIcon)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
@@ -414,6 +443,96 @@ private fun SearchResultCover(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SearchCoverPreviewOverlay(
+    preview: SearchCoverPreview,
+    modifier: Modifier = Modifier,
+    onDismiss: () -> Unit,
+) {
+    val image = rememberSearchCoverImage(preview.coverUrl)
+    val blockDismissInteractionSource = remember { MutableInteractionSource() }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.82f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(SearchPreviewMaxWidthFraction)
+                .fillMaxHeight(SearchPreviewMaxHeightFraction)
+                .clickable(
+                    interactionSource = blockDismissInteractionSource,
+                    indication = null,
+                    onClick = {},
+                ),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
+            shape = MaterialTheme.shapes.extraLarge,
+            tonalElevation = 8.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = preview.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (image != null) {
+                        Image(
+                            bitmap = image,
+                            contentDescription = "${preview.title} 封面大图",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                    } else {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = MaterialTheme.shapes.large,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    text = buildSearchCoverFallbackText(preview.title),
+                                    style = MaterialTheme.typography.displayMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = if (preview.coverUrl.isNullOrBlank()) "当前结果没有可预览封面" else "封面加载中或暂时不可用",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = "点击空白区域关闭预览",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

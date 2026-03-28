@@ -6,6 +6,7 @@ import com.openclaw.musicworker.shared.api.HealthPayload
 import com.openclaw.musicworker.shared.api.ProxyInfo
 import com.openclaw.musicworker.shared.api.SearchItem
 import com.openclaw.musicworker.shared.config.ApiServerConfig
+import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +58,14 @@ data class DesktopDownloadUiState(
     val selectedTitle: String? = null,
     val isStarting: Boolean = false,
     val isPolling: Boolean = false,
+    val isExporting: Boolean = false,
+    val exportDownloadedBytes: Long = 0L,
+    val exportTotalBytes: Long? = null,
+    val exportedTaskId: String? = null,
+    val exportingTaskId: String? = null,
+    val savedFilePath: String? = null,
+    val exportMessage: String? = null,
+    val exportErrorMessage: String? = null,
     val errorMessage: String? = null,
 )
 
@@ -84,6 +93,8 @@ data class DesktopUpdateUiState(
 data class DesktopUiState(
     val currentPage: DesktopPage = DesktopPage.SEARCH,
     val serverConfig: ApiServerConfig = ApiServerConfig(),
+    val downloadDirectoryPath: String = DesktopPaths.defaultDownloadsDir().toAbsolutePath().normalize().toString(),
+    val hasCustomDownloadDirectory: Boolean = false,
     val health: DesktopHealthUiState = DesktopHealthUiState(),
     val search: DesktopSearchUiState = DesktopSearchUiState(),
     val download: DesktopDownloadUiState = DesktopDownloadUiState(),
@@ -96,6 +107,7 @@ class DesktopAppState(
     private val settingsStore: DesktopSettingsStore = DesktopSettingsStore(),
     private val apiClient: DesktopMusicApiClient = DesktopMusicApiClient(),
     private val updateManager: DesktopUpdateManager = DesktopUpdateManager(),
+    private val taskFileExporter: DesktopTaskFileExporter = DesktopTaskFileExporter(),
 ) {
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         DesktopFileLogger.error("unhandled coroutine exception in DesktopAppState", throwable)
@@ -103,10 +115,13 @@ class DesktopAppState(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private var pollJob: Job? = null
     private var pollingTaskId: String? = null
+    private val initialCustomDownloadDirectoryPath = settingsStore.currentDownloadDirectoryPath()
 
     private val _uiState = MutableStateFlow(
         DesktopUiState(
             serverConfig = settingsStore.load(),
+            downloadDirectoryPath = resolveDownloadDirectoryPath(initialCustomDownloadDirectoryPath),
+            hasCustomDownloadDirectory = !initialCustomDownloadDirectoryPath.isNullOrBlank(),
             update = DesktopUpdateUiState(
                 currentVersionName = updateManager.currentVersionName(),
                 currentVersionCode = updateManager.currentVersionCode(),
@@ -116,7 +131,9 @@ class DesktopAppState(
     val uiState: StateFlow<DesktopUiState> = _uiState.asStateFlow()
 
     fun initialize() {
-        DesktopFileLogger.info("DesktopAppState initialized baseUrl=${_uiState.value.serverConfig.baseUrl}")
+        DesktopFileLogger.info(
+            "DesktopAppState initialized baseUrl=${_uiState.value.serverConfig.baseUrl} downloadDir=${_uiState.value.downloadDirectoryPath}",
+        )
         refreshHealth()
         refreshOperations()
         refreshLatestTask()
@@ -193,6 +210,32 @@ class DesktopAppState(
         refreshHealth()
         refreshOperations()
         refreshLatestTask()
+    }
+
+    fun setDownloadDirectory(path: String) {
+        val normalizedPath = resolveDownloadDirectoryPath(path)
+        settingsStore.saveDownloadDirectory(normalizedPath)
+        _uiState.update { state ->
+            state.copy(
+                downloadDirectoryPath = normalizedPath,
+                hasCustomDownloadDirectory = true,
+                message = "已设置 Windows 保存目录：$normalizedPath",
+            )
+        }
+        maybeExportFinishedTask(_uiState.value.download.currentTask)
+    }
+
+    fun resetDownloadDirectory() {
+        settingsStore.clearDownloadDirectory()
+        val defaultPath = resolveDownloadDirectoryPath(null)
+        _uiState.update { state ->
+            state.copy(
+                downloadDirectoryPath = defaultPath,
+                hasCustomDownloadDirectory = false,
+                message = "已恢复默认 Windows 保存目录：$defaultPath",
+            )
+        }
+        maybeExportFinishedTask(_uiState.value.download.currentTask)
     }
 
     fun refreshHealth() {
@@ -443,12 +486,16 @@ class DesktopAppState(
 
     fun startDownload(item: SearchItem) {
         val currentDownload = _uiState.value.download
-        if (currentDownload.isStarting || currentDownload.currentTask?.status in ACTIVE_TASK_STATUSES) {
+        if (currentDownload.isStarting || currentDownload.isExporting || currentDownload.currentTask?.status in ACTIVE_TASK_STATUSES) {
             DesktopFileLogger.warn("download ignored because another task is active itemId=${item.id}")
             _uiState.update { state ->
                 state.copy(
                     download = state.download.copy(
-                        errorMessage = "当前已有下载任务在执行，请等待完成后再发起新的下载",
+                        errorMessage = if (state.download.isExporting) {
+                            "当前正在保存上一首到 Windows 目录，请等待完成后再发起新的下载"
+                        } else {
+                            "当前已有下载任务在执行，请等待完成后再发起新的下载"
+                        },
                     ),
                 )
             }
@@ -515,22 +562,34 @@ class DesktopAppState(
             runCatching { apiClient.getTasks(_uiState.value.serverConfig) }
                 .onSuccess { tasks ->
                     val taskToDisplay = tasks.firstOrNull { it.status in ACTIVE_TASK_STATUSES } ?: tasks.firstOrNull()
-                    val previousTaskId = _uiState.value.download.currentTask?.taskId
+                    val currentDownload = _uiState.value.download
+                    val previousTaskId = currentDownload.currentTask?.taskId
                     val selectedTitle = if (taskToDisplay?.taskId == previousTaskId) {
-                        _uiState.value.download.selectedTitle
+                        currentDownload.selectedTitle
                     } else {
                         null
+                    }
+                    val nextDownload = if (taskToDisplay?.taskId == previousTaskId) {
+                        currentDownload.copy(
+                            currentTask = taskToDisplay,
+                            selectedTitle = selectedTitle,
+                            isStarting = false,
+                            isPolling = taskToDisplay?.status in ACTIVE_TASK_STATUSES,
+                            errorMessage = taskToDisplay?.errorMessage,
+                        )
+                    } else {
+                        DesktopDownloadUiState(
+                            currentTask = taskToDisplay,
+                            selectedTitle = selectedTitle,
+                            isStarting = false,
+                            isPolling = taskToDisplay?.status in ACTIVE_TASK_STATUSES,
+                            errorMessage = taskToDisplay?.errorMessage,
+                        )
                     }
 
                     _uiState.update { state ->
                         state.copy(
-                            download = DesktopDownloadUiState(
-                                currentTask = taskToDisplay,
-                                selectedTitle = selectedTitle,
-                                isStarting = false,
-                                isPolling = taskToDisplay?.status in ACTIVE_TASK_STATUSES,
-                                errorMessage = taskToDisplay?.errorMessage,
-                            ),
+                            download = nextDownload,
                         )
                     }
 
@@ -539,6 +598,7 @@ class DesktopAppState(
                     } else {
                         stopPolling()
                     }
+                    maybeExportFinishedTask(taskToDisplay)
                 }
                 .onFailure { error ->
                     logFailure("refresh latest task failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
@@ -672,13 +732,23 @@ class DesktopAppState(
 
                 val task = taskResult.getOrThrow()
                 _uiState.update { state ->
+                    val sameTask = state.download.currentTask?.taskId == task.taskId
                     state.copy(
-                        download = state.download.copy(
-                            currentTask = task,
-                            isStarting = false,
-                            isPolling = task.status in ACTIVE_TASK_STATUSES,
-                            errorMessage = task.errorMessage,
-                        ),
+                        download = if (sameTask) {
+                            state.download.copy(
+                                currentTask = task,
+                                isStarting = false,
+                                isPolling = task.status in ACTIVE_TASK_STATUSES,
+                                errorMessage = task.errorMessage,
+                            )
+                        } else {
+                            DesktopDownloadUiState(
+                                currentTask = task,
+                                isStarting = false,
+                                isPolling = task.status in ACTIVE_TASK_STATUSES,
+                                errorMessage = task.errorMessage,
+                            )
+                        },
                         message = if (task.status == "finished") {
                             "下载任务已完成：${task.filename ?: task.musicId}"
                         } else {
@@ -691,6 +761,7 @@ class DesktopAppState(
                     DesktopFileLogger.info(
                         "download task finished taskId=${task.taskId} status=${task.status} stage=${task.stage} file=${task.filename.orEmpty()}",
                     )
+                    maybeExportFinishedTask(task)
                     stopPolling()
                     refreshHealth()
                     break
@@ -705,6 +776,100 @@ class DesktopAppState(
         pollJob?.cancel()
         pollJob = null
         pollingTaskId = null
+    }
+
+    private fun maybeExportFinishedTask(task: DownloadTask?) {
+        if (task == null || task.status != "finished" || task.filePath.isNullOrBlank()) {
+            return
+        }
+
+        val downloadState = _uiState.value.download
+        if (downloadState.exportedTaskId == task.taskId || downloadState.exportingTaskId == task.taskId) {
+            return
+        }
+
+        scope.launch {
+            exportFinishedTask(task)
+        }
+    }
+
+    private suspend fun exportFinishedTask(task: DownloadTask) {
+        val downloadDirectoryPath = _uiState.value.downloadDirectoryPath
+        _uiState.update { state ->
+            state.copy(
+                download = state.download.copy(
+                    isExporting = true,
+                    exportDownloadedBytes = 0L,
+                    exportTotalBytes = task.fileSize,
+                    exportingTaskId = task.taskId,
+                    savedFilePath = if (state.download.exportedTaskId == task.taskId) state.download.savedFilePath else null,
+                    exportMessage = "正在保存到 Windows 目录…",
+                    exportErrorMessage = null,
+                    errorMessage = task.errorMessage,
+                ),
+            )
+        }
+
+        runCatching {
+            taskFileExporter.exportTaskFile(
+                apiClient = apiClient,
+                config = _uiState.value.serverConfig,
+                task = task,
+                downloadDirectoryPath = downloadDirectoryPath,
+            ) { downloadedBytes, totalBytes ->
+                _uiState.update { state ->
+                    if (state.download.exportingTaskId != task.taskId) {
+                        state
+                    } else {
+                        state.copy(
+                            download = state.download.copy(
+                                exportDownloadedBytes = downloadedBytes,
+                                exportTotalBytes = totalBytes ?: task.fileSize,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+            .onSuccess { exportedFile ->
+                DesktopFileLogger.info(
+                    "desktop task exported taskId=${task.taskId} path=${exportedFile.filePath}",
+                )
+                _uiState.update { state ->
+                    state.copy(
+                        download = state.download.copy(
+                            isExporting = false,
+                            exportDownloadedBytes = state.download.exportTotalBytes ?: state.download.exportDownloadedBytes,
+                            exportTotalBytes = state.download.exportTotalBytes ?: task.fileSize,
+                            exportedTaskId = task.taskId,
+                            exportingTaskId = null,
+                            savedFilePath = exportedFile.filePath,
+                            exportMessage = "已保存到 Windows：${exportedFile.fileName}",
+                            exportErrorMessage = null,
+                            errorMessage = task.errorMessage,
+                        ),
+                        message = "已保存到 Windows：${exportedFile.fileName}",
+                    )
+                }
+            }
+            .onFailure { error ->
+                logFailure(
+                    "export desktop task file failed",
+                    error,
+                    "taskId=${task.taskId} dir=$downloadDirectoryPath",
+                )
+                _uiState.update { state ->
+                    state.copy(
+                        download = state.download.copy(
+                            isExporting = false,
+                            exportingTaskId = null,
+                            exportMessage = null,
+                            exportErrorMessage = error.message ?: "保存到 Windows 目录失败",
+                            errorMessage = task.errorMessage,
+                        ),
+                    )
+                }
+            }
     }
 
     fun close() {
@@ -749,6 +914,20 @@ class DesktopAppState(
             }
         }
     }
+}
+
+private fun resolveDownloadDirectoryPath(customPath: String?): String {
+    val customDirectory = customPath
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { normalizedPathOrNull(it) }
+    return (customDirectory ?: DesktopPaths.defaultDownloadsDir().toAbsolutePath().normalize()).toString()
+}
+
+private fun normalizedPathOrNull(path: String): Path? {
+    return runCatching {
+        Path.of(path).toAbsolutePath().normalize()
+    }.getOrNull()
 }
 
 private fun DesktopSearchUiState.rebuildVisibleResults(

@@ -16,6 +16,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -37,31 +41,42 @@ internal fun SearchDownloadPage(
 ) {
     val visibleResults = uiState.search.visibleResults
     val selectedItem = visibleResults.firstOrNull { it.id == uiState.search.selectedResultId }
+    var previewCover by remember { mutableStateOf<SearchCoverPreview?>(null) }
 
-    Row(
-        modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SearchSidebar(
-            uiState = uiState,
-            visibleResults = visibleResults,
-            onSearchInputChanged = onSearchInputChanged,
-            onSearch = onSearch,
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            SearchSidebar(
+                uiState = uiState,
+                visibleResults = visibleResults,
+                onSearchInputChanged = onSearchInputChanged,
+                onSearch = onSearch,
+            )
 
-        SearchResultsPanel(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-            uiState = uiState,
-            visibleResults = visibleResults,
-            selectedItem = selectedItem,
-            hasActiveDownload = hasActiveDownload,
-            onSelectResult = onSelectResult,
-            onSortModeChanged = onSortModeChanged,
-            onFilterModeChanged = onFilterModeChanged,
-            onStartDownload = onStartDownload,
-        )
+            SearchResultsPanel(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                uiState = uiState,
+                visibleResults = visibleResults,
+                selectedItem = selectedItem,
+                hasActiveDownload = hasActiveDownload,
+                onSelectResult = onSelectResult,
+                onSortModeChanged = onSortModeChanged,
+                onFilterModeChanged = onFilterModeChanged,
+                onStartDownload = onStartDownload,
+                onPreviewCover = { previewCover = it },
+            )
+        }
+
+        previewCover?.let { preview ->
+            SearchCoverPreviewOverlay(
+                preview = preview,
+                onDismiss = { previewCover = null },
+            )
+        }
     }
 }
 
@@ -139,6 +154,7 @@ private fun SearchResultsPanel(
     onSortModeChanged: (SearchSortMode) -> Unit,
     onFilterModeChanged: (SearchFilterMode) -> Unit,
     onStartDownload: (SearchItem) -> Unit,
+    onPreviewCover: (SearchCoverPreview) -> Unit,
 ) {
     Card(modifier = modifier) {
         Column(
@@ -209,6 +225,7 @@ private fun SearchResultsPanel(
                             hasActiveDownload = hasActiveDownload,
                             onSelectResult = onSelectResult,
                             onStartDownload = onStartDownload,
+                            onPreviewCover = onPreviewCover,
                         )
                     }
                 }
