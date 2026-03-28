@@ -19,6 +19,20 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+enum class SearchSortMode(val label: String) {
+    DEFAULT("默认"),
+    TITLE_ASC("标题 A-Z"),
+    DURATION_ASC("时长短到长"),
+    DURATION_DESC("时长长到短"),
+}
+
+enum class SearchFilterMode(val label: String) {
+    ALL("全部"),
+    UNDER_4_MIN("短于 4 分钟"),
+    BETWEEN_4_AND_10_MIN("4-10 分钟"),
+    OVER_10_MIN("长于 10 分钟"),
+}
+
 data class DesktopHealthUiState(
     val isLoading: Boolean = false,
     val health: HealthPayload? = null,
@@ -30,6 +44,10 @@ data class DesktopSearchUiState(
     val activeKeyword: String = "",
     val isSearching: Boolean = false,
     val results: List<SearchItem> = emptyList(),
+    val visibleResults: List<SearchItem> = emptyList(),
+    val sortMode: SearchSortMode = SearchSortMode.DEFAULT,
+    val filterMode: SearchFilterMode = SearchFilterMode.ALL,
+    val selectedResultId: String? = null,
     val errorMessage: String? = null,
 )
 
@@ -63,6 +81,7 @@ data class DesktopUpdateUiState(
 )
 
 data class DesktopUiState(
+    val currentPage: DesktopPage = DesktopPage.SEARCH,
     val serverConfig: ApiServerConfig = ApiServerConfig(),
     val health: DesktopHealthUiState = DesktopHealthUiState(),
     val search: DesktopSearchUiState = DesktopSearchUiState(),
@@ -98,6 +117,12 @@ class DesktopAppState(
         refreshLatestTask()
     }
 
+    fun switchPage(page: DesktopPage) {
+        _uiState.update { state ->
+            state.copy(currentPage = page)
+        }
+    }
+
     fun updateHost(value: String) {
         _uiState.update { state ->
             state.copy(serverConfig = state.serverConfig.copy(host = value.trim()))
@@ -114,6 +139,26 @@ class DesktopAppState(
     fun updateSearchInput(value: String) {
         _uiState.update { state ->
             state.copy(search = state.search.copy(input = value))
+        }
+    }
+
+    fun selectSearchResult(itemId: String) {
+        _uiState.update { state ->
+            state.copy(
+                search = state.search.copy(selectedResultId = itemId),
+            )
+        }
+    }
+
+    fun updateSearchSortMode(mode: SearchSortMode) {
+        _uiState.update { state ->
+            state.copy(search = state.search.rebuildVisibleResults(sortMode = mode))
+        }
+    }
+
+    fun updateSearchFilterMode(mode: SearchFilterMode) {
+        _uiState.update { state ->
+            state.copy(search = state.search.rebuildVisibleResults(filterMode = mode))
         }
     }
 
@@ -354,9 +399,8 @@ class DesktopAppState(
                             search = state.search.copy(
                                 activeKeyword = keyword,
                                 isSearching = false,
-                                results = results,
                                 errorMessage = null,
-                            ),
+                            ).rebuildVisibleResults(results = results),
                             message = "桌面端搜索完成，共 ${results.size} 条结果",
                         )
                     }
@@ -646,5 +690,45 @@ class DesktopAppState(
                 "已获取安装包：${updateInfo.fileName}"
             }
         }
+    }
+}
+
+private fun DesktopSearchUiState.rebuildVisibleResults(
+    results: List<SearchItem> = this.results,
+    sortMode: SearchSortMode = this.sortMode,
+    filterMode: SearchFilterMode = this.filterMode,
+    preferredSelectedResultId: String? = this.selectedResultId,
+): DesktopSearchUiState {
+    val visibleResults = results
+        .asSequence()
+        .filter { filterMode.matches(it) }
+        .let { items ->
+            when (sortMode) {
+                SearchSortMode.DEFAULT -> items.toList()
+                SearchSortMode.TITLE_ASC -> items.sortedBy { it.title.lowercase() }.toList()
+                SearchSortMode.DURATION_ASC -> items.sortedWith(compareBy<SearchItem> { it.duration ?: Double.MAX_VALUE }.thenBy { it.title.lowercase() }).toList()
+                SearchSortMode.DURATION_DESC -> items.sortedWith(compareByDescending<SearchItem> { it.duration ?: -1.0 }.thenBy { it.title.lowercase() }).toList()
+            }
+        }
+    val selectedResultId = preferredSelectedResultId?.takeIf { selectedId ->
+        visibleResults.any { it.id == selectedId }
+    } ?: visibleResults.firstOrNull()?.id
+
+    return copy(
+        results = results,
+        visibleResults = visibleResults,
+        sortMode = sortMode,
+        filterMode = filterMode,
+        selectedResultId = selectedResultId,
+    )
+}
+
+private fun SearchFilterMode.matches(item: SearchItem): Boolean {
+    val duration = item.duration ?: return this == SearchFilterMode.ALL
+    return when (this) {
+        SearchFilterMode.ALL -> true
+        SearchFilterMode.UNDER_4_MIN -> duration < 240.0
+        SearchFilterMode.BETWEEN_4_AND_10_MIN -> duration in 240.0..600.0
+        SearchFilterMode.OVER_10_MIN -> duration > 600.0
     }
 }

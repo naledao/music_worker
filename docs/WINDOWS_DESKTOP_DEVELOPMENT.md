@@ -4,6 +4,29 @@
 
 本文档用于指导基于 `Kotlin Multiplatform + Compose Multiplatform Desktop` 为当前 `music_worker` 项目开发 Windows 桌面客户端。
 
+配套文档：
+
+- `docs/WINDOWS_DESKTOP_UI_REDESIGN.md`
+  用于桌面端从移动式长页面改造成桌面工作台布局的专项方案
+
+当前进度：
+
+- Windows 桌面端第一阶段 UI 壳层重构已完成
+- 当前已形成 `顶部状态栏 + 左侧导航 + 主内容区 + 右侧任务面板`
+- 第二阶段搜索页重构已完成主要收口
+- 第三阶段代理日志页重构已完成
+- 第四阶段视觉与交互收口已开始
+- `desktop-app` 当前已通过 `compileKotlin`
+- 搜索页拆分后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 搜索组件继续拆分后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 搜索页继续微调边距、按钮层级和结果密度后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 代理日志页拆分并重构后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 代理日志页继续补强节点高亮、错误摘要和日志密度后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 第四阶段首轮主题、导航和壳层视觉统一后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 第四阶段继续收口 `总览 / 更新设置` 两页后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 最近一次桌面编译验证命令为 `GRADLE_USER_HOME=/codes/music_worker/.gradle-user/android ./android-app/gradlew -p /codes/music_worker/desktop-app compileKotlin`
+- 下一步应继续细化第四阶段，补齐更多交互状态，并做一轮桌面端回归验证
+
 目标不是重新实现下载核心，也不是第一阶段就把 Python、代理和所有依赖全部封装进一个单文件绿色版，而是先做一个可稳定使用、可持续演进的桌面客户端。
 
 首阶段目标：
@@ -314,6 +337,7 @@ Windows 端推荐把配置保存在：
 - 输入多行关键词
 - 发起搜索
 - 展示搜索结果列表
+- 切换排序与过滤条件
 
 ### 9.3 结果页
 
@@ -479,7 +503,7 @@ python3 bin/publish_desktop_installers.py --source windows-installers/run-236382
 - 本地安装验证
 - 发布流程文档
 
-### 当前进度（2026-03-27）
+### 当前进度（2026-03-28）
 
 已完成：
 
@@ -489,6 +513,28 @@ python3 bin/publish_desktop_installers.py --source windows-installers/run-236382
 - 桌面端已接通 `GET /api/health`
 - 桌面端已接通 `POST /api/search`
 - 桌面端已可展示搜索结果列表
+- 桌面端搜索页已支持排序 / 过滤交互，并能动态重排结果
+- 桌面端搜索页已支持过滤后空状态提示和选中项自动修正
+- 搜索页主要组件与 helper 已提取到 `DesktopSearchPage.kt`
+- 搜索页通用组件已进一步提取到 `DesktopSearchComponents.kt`
+- 搜索结果区已进一步压缩信息层级，更适合桌面列表浏览
+- `DesktopApp.kt` 已回收为更轻的应用入口与页面分发文件
+- `DesktopSearchPage.kt` 已收口为页面布局层
+- 搜索侧栏宽度、页面内边距和结果列表垂直密度已再次收口
+- 结果区下载按钮已调整为更符合桌面层级的“默认次级 / 当前项强调”
+- 代理日志页主体已提取到 `DesktopOperationsPage.kt`
+- 节点区已改成“摘要卡片 + 可筛选紧凑列表”
+- 日志区已改成独立滚动面板，并支持 `全部日志 / 仅错误` 过滤
+- 当前节点高亮已增强为“摘要条 + 列表高亮”
+- 日志区已补充最近错误摘要，并进一步压缩日志阅读密度
+- 第三阶段代理日志页重构已可视为完成状态
+- 第四阶段已开始统一桌面主题、字号、圆角与边框体系
+- 左侧导航已改成更明确的桌面工作区导航样式
+- 顶部状态条已改成按状态分色的摘要徽标
+- 主内容区、右侧侧栏与总览摘要卡已开始统一表面语言
+- 总览页已进一步收口为更明确的摘要区、服务任务区与日志区
+- 更新设置页已进一步收口为更新区、配置区与健康区
+- 已补充提示条、内嵌信息块和事实行等通用桌面组件
 - 桌面端已接通 `POST /api/download`
 - 桌面端已接通 `GET /api/tasks` 与 `GET /api/tasks/{id}`
 - 桌面端已可展示当前下载任务、进度、速度与 ETA
@@ -538,15 +584,15 @@ Windows 客户端如果要做真正“一键可用”，最终仍要解决这些
 
 按当前代码状态，下一步最合理的动作是：
 
-1. 把桌面端的 API 封装继续往 `shared/` 收口，减少 Android / Windows 后续分叉
-2. 推送当前分支到 GitHub，并运行 `Windows Desktop Package` 工作流
-3. 验证 `.exe/.msi` 产物路径，并确认 `platform=desktop` 更新接口可实际返回安装包
-4. 补版本号更新规范与 GitHub Releases 发布说明
+1. 继续第四阶段，补齐更多 hover / disabled / selected 状态，减少默认 Material 放大感
+2. 完成后做整体桌面端页面回归验证
+3. 如有必要，再继续拆分 `DesktopApp.kt` 中新增的通用桌面组件
 
-也就是说，当前已经完成了搜索、下载任务、日志、代理、更新下载代码链路和远程 Windows 打包流程，后续重点应转到“实际执行与发布验证”：
+也就是说，当前已经完成了桌面壳层、搜索主流程、下载任务、日志、代理、更新下载等主链路，当前重点应转到“桌面 UI 收口与模块拆分”：
 
-- 保持下载文件继续由服务端保存
-- 先在 GitHub Actions 上产出可下载的 Windows 安装包
-- 再完善版本发布与分发流程
+- 第三阶段代理日志页已经可以收口
+- 继续收口桌面视觉风格和交互状态
+- 逐步把新增的通用桌面组件从 `DesktopApp.kt` 拆出来
+- 最后统一验证安装包和发布链路
 
-这样推进，风险最低，也最接近可实际使用的 Windows MVP。
+这样推进，风险最低，也最接近一个可长期演进的 Windows 客户端。
