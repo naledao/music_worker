@@ -159,15 +159,37 @@ internal class DesktopPlaybackController(
             if (javaFxStarted.get()) {
                 return
             }
-            val latch = CountDownLatch(1)
-            SwingUtilities.invokeLater {
+            val initError = arrayOfNulls<Throwable>(1)
+            val swingInit = Runnable {
                 runCatching { JFXPanel() }
                     .onFailure { error ->
+                        initError[0] = error
                         DesktopFileLogger.error("initialize JavaFX runtime failed", error)
                     }
-                latch.countDown()
             }
-            if (!latch.await(10, TimeUnit.SECONDS)) {
+            if (SwingUtilities.isEventDispatchThread()) {
+                swingInit.run()
+            } else {
+                runCatching { SwingUtilities.invokeAndWait(swingInit) }
+                    .onFailure { error ->
+                        initError[0] = error
+                        DesktopFileLogger.error("initialize JavaFX runtime on EDT failed", error)
+                    }
+            }
+            initError[0]?.let { error ->
+                throw IllegalStateException("JavaFX runtime 初始化失败: ${error.message.orEmpty()}", error)
+            }
+
+            val fxReadyLatch = CountDownLatch(1)
+            runCatching {
+                Platform.runLater {
+                    fxReadyLatch.countDown()
+                }
+            }.onFailure { error ->
+                DesktopFileLogger.error("schedule JavaFX ready signal failed", error)
+                throw IllegalStateException("JavaFX runtime 初始化失败: ${error.message.orEmpty()}", error)
+            }
+            if (!fxReadyLatch.await(10, TimeUnit.SECONDS)) {
                 throw IllegalStateException("JavaFX runtime 初始化超时")
             }
             javaFxStarted.set(true)

@@ -4,8 +4,8 @@ val desktopPackageName = "YinZhaoDesktop"
 val desktopDisplayName = "音爪"
 val desktopPackageVendor = "YinZhao"
 val desktopPackageDescription = "YinZhao Desktop Client"
-val desktopAppVersion = "0.1.8"
-val desktopAppVersionCode = 9L
+val desktopAppVersion = "0.1.9"
+val desktopAppVersionCode = 10L
 val javafxVersion = "17.0.2"
 val javafxPlatform = when {
     System.getProperty("os.name").lowercase().contains("win") -> "win"
