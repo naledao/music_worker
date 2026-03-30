@@ -208,7 +208,7 @@ class DesktopUpdateManager {
     private companion object {
         const val PROP_VERSION_NAME = "musicworker.desktop.version"
         const val PROP_VERSION_CODE = "musicworker.desktop.versionCode"
-        const val DEFAULT_VERSION_NAME = "0.2.3"
-        const val DEFAULT_VERSION_CODE = 14L
+        const val DEFAULT_VERSION_NAME = "0.2.4"
+        const val DEFAULT_VERSION_CODE = 15L
     }
 }

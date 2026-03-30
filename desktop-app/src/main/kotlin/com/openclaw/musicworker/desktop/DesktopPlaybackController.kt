@@ -10,7 +10,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import javax.sound.sampled.AudioSystem
 import javazoom.jlgui.basicplayer.BasicController
 import javazoom.jlgui.basicplayer.BasicPlayer
 import javazoom.jlgui.basicplayer.BasicPlayerEvent
@@ -152,7 +151,7 @@ internal class DesktopPlaybackController(
         val sessionId = sessionSequence.incrementAndGet()
         currentSessionId = sessionId
 
-        val newPlayer = BasicPlayer().apply {
+        val newPlayer = DesktopMp3BasicPlayer().apply {
             addBasicPlayerListener(StreamingPlayerListener(sessionId, requestToken))
         }
         player = newPlayer
@@ -415,9 +414,7 @@ internal class DesktopPlaybackController(
     }
 
     private fun validatePlaybackFile(path: Path) {
-        AudioSystem.getAudioInputStream(path.toFile()).use { stream ->
-            stream.format
-        }
+        DesktopMp3AudioSupport.validateAudioFile(path.toFile())
     }
 
     private fun submitControl(action: () -> Unit) {
