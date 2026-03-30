@@ -10,6 +10,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import javax.sound.sampled.AudioSystem
 import javazoom.jlgui.basicplayer.BasicController
 import javazoom.jlgui.basicplayer.BasicPlayer
 import javazoom.jlgui.basicplayer.BasicPlayerEvent
@@ -170,7 +171,7 @@ internal class DesktopPlaybackController(
         onBufferingChanged(action.requestToken, true)
 
         runCatching {
-            val cacheFile = downloadPlaybackFile(action.url, action.sessionId)
+            val cacheFile = downloadPlaybackFileWithRetry(action.url, action.sessionId)
             val shouldContinue = synchronized(stateLock) {
                 if (player === action.player && currentSessionId == action.sessionId && currentRequestToken == action.requestToken) {
                     currentCacheFile = cacheFile
@@ -316,11 +317,29 @@ internal class DesktopPlaybackController(
             message.contains("HTTP 404", ignoreCase = true) -> "服务端音频文件不存在"
             message.contains("HTTP 500", ignoreCase = true) -> "服务端音频接口异常"
             message.contains("timed out", ignoreCase = true) -> "桌面端获取音频超时"
+            message.contains("incomplete", ignoreCase = true) -> "桌面端缓存音频不完整，请重试"
+            message.contains("unsupported format", ignoreCase = true) -> "桌面端拿到的音频文件格式异常，请重试"
             message.contains("Unable to retrieve", ignoreCase = true) -> "桌面播放器无法连接音频流"
             message.contains("Connection refused", ignoreCase = true) -> "桌面播放器无法连接本地音频服务"
             message.contains("mark/reset not supported", ignoreCase = true) -> "桌面播放器无法读取当前音频流"
             else -> message
         }
+    }
+
+    private fun downloadPlaybackFileWithRetry(url: String, sessionId: Long): Path {
+        var lastError: Throwable? = null
+        repeat(MAX_DOWNLOAD_ATTEMPTS) { attemptIndex ->
+            runCatching { downloadPlaybackFile(url, sessionId) }
+                .onSuccess { return it }
+                .onFailure { error ->
+                    lastError = error
+                    DesktopFileLogger.warn(
+                        "desktop playback cache attempt=${attemptIndex + 1}/$MAX_DOWNLOAD_ATTEMPTS failed url=$url err=${error.message.orEmpty()}"
+                    )
+                }
+        }
+
+        throw lastError ?: IOException("desktop playback cache failed")
     }
 
     private fun downloadPlaybackFile(url: String, sessionId: Long): Path {
@@ -337,6 +356,8 @@ internal class DesktopPlaybackController(
             connectTimeout = DEFAULT_CONNECT_TIMEOUT_MS
             readTimeout = DEFAULT_READ_TIMEOUT_MS
             instanceFollowRedirects = true
+            setRequestProperty("Accept-Encoding", "identity")
+            setRequestProperty("Connection", "close")
         }
 
         try {
@@ -345,6 +366,9 @@ internal class DesktopPlaybackController(
                 throw IOException("HTTP $statusCode")
             }
 
+            val expectedLength = connection.contentLengthLong.takeIf { it > 0L }
+            val contentType = connection.contentType?.trim().orEmpty()
+            var writtenBytes = 0L
             tempFile.toFile().outputStream().use { output ->
                 connection.inputStream.use { input ->
                     val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
@@ -354,13 +378,21 @@ internal class DesktopPlaybackController(
                             break
                         }
                         output.write(buffer, 0, readCount)
+                        writtenBytes += readCount.toLong()
                     }
                     output.flush()
                 }
             }
 
+            if (expectedLength != null && writtenBytes != expectedLength) {
+                throw IOException("downloaded audio file incomplete ($writtenBytes/$expectedLength)")
+            }
+
             Files.move(tempFile, targetFile, StandardCopyOption.REPLACE_EXISTING)
-            DesktopFileLogger.info("desktop playback cached file=$targetFile source=$url")
+            validatePlaybackFile(targetFile)
+            DesktopFileLogger.info(
+                "desktop playback cached file=$targetFile bytes=$writtenBytes expected=${expectedLength ?: -1L} contentType=$contentType source=$url"
+            )
             return targetFile
         } catch (error: Throwable) {
             Files.deleteIfExists(tempFile)
@@ -380,6 +412,12 @@ internal class DesktopPlaybackController(
             .onFailure { error ->
                 DesktopFileLogger.warn("desktop playback cache cleanup failed file=$path err=${error.message.orEmpty()}")
             }
+    }
+
+    private fun validatePlaybackFile(path: Path) {
+        AudioSystem.getAudioInputStream(path.toFile()).use { stream ->
+            stream.format
+        }
     }
 
     private fun submitControl(action: () -> Unit) {
@@ -487,7 +525,8 @@ internal class DesktopPlaybackController(
 
     private companion object {
         const val DEFAULT_CONNECT_TIMEOUT_MS = 15000
-        const val DEFAULT_READ_TIMEOUT_MS = 60000
+        const val DEFAULT_READ_TIMEOUT_MS = 120000
         const val DOWNLOAD_BUFFER_SIZE = 256 * 1024
+        const val MAX_DOWNLOAD_ATTEMPTS = 2
     }
 }
