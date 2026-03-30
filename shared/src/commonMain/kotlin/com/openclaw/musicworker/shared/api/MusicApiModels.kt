@@ -105,6 +105,52 @@ data class SearchPayload(
 )
 
 @Serializable
+data class ChartRegionInfo(
+    val id: String,
+    val label: String,
+)
+
+@Serializable
+data class ChartSourceInfo(
+    val id: String,
+    val label: String,
+    val types: List<String> = emptyList(),
+    val periods: List<String> = emptyList(),
+    val regions: List<ChartRegionInfo> = emptyList(),
+)
+
+@Serializable
+data class ChartSourcesPayload(
+    val sources: List<ChartSourceInfo> = emptyList(),
+)
+
+@Serializable
+data class ChartItem(
+    val rank: Int,
+    val title: String,
+    val artist: String,
+    val cover: String? = null,
+    val album: String? = null,
+    val durationSec: Double? = null,
+    val deeplink: String? = null,
+    val searchKeyword: String,
+    val sourceId: String? = null,
+    val releaseDate: String? = null,
+)
+
+@Serializable
+data class ChartPayload(
+    val source: String,
+    val type: String,
+    val period: String,
+    val region: String,
+    val title: String,
+    val updatedAt: String? = null,
+    val fromCache: Boolean = false,
+    val items: List<ChartItem> = emptyList(),
+)
+
+@Serializable
 data class SearchRequest(
     val keyword: String,
     val limit: Int = 20,

@@ -8,6 +8,8 @@
 
 - `docs/WINDOWS_DESKTOP_UI_REDESIGN.md`
   用于桌面端从移动式长页面改造成桌面工作台布局的专项方案
+- `docs/WINDOWS_DESKTOP_ANDROID_PARITY.md`
+  用于桌面端与 Android 端功能对齐的专项方案
 
 当前进度：
 
@@ -24,8 +26,19 @@
 - 代理日志页继续补强节点高亮、错误摘要和日志密度后，`desktop-app` 的 `compileKotlin` 已再次通过
 - 第四阶段首轮主题、导航和壳层视觉统一后，`desktop-app` 的 `compileKotlin` 已再次通过
 - 第四阶段继续收口 `总览 / 更新设置` 两页后，`desktop-app` 的 `compileKotlin` 已再次通过
-- 最近一次桌面编译验证命令为 `GRADLE_USER_HOME=/codes/music_worker/.gradle-user/android ./android-app/gradlew -p /codes/music_worker/desktop-app compileKotlin`
-- 下一步应继续细化第四阶段，补齐更多交互状态，并做一轮桌面端回归验证
+- 桌面端已补齐与 Android 对齐的 `排行榜` 页面
+- 桌面端已接入 `排行榜 -> 搜索结果` 链路
+- 桌面端已支持 `GET /api/charts/sources` 与 `GET /api/charts`
+- 桌面端补齐排行榜页后，`desktop-app` 的 `compileKotlin` 已再次通过
+- 桌面端与 Android 对齐专项中的 `M1. 播放状态建模` 已完成
+- 桌面端与 Android 对齐专项中的 `M2. 搜索结果接入在线播放` 已完成代码落地，待人工验证
+- 桌面端与 Android 对齐专项中的 `M3. 桌面播放器 UI` 已完成代码落地，待人工验证
+- 搜索结果页已新增 `在线播放` 按钮，并已接入服务端准备音频链路
+- 服务端任务完成后，桌面端已可把 `/api/files/{taskId}` 写入播放状态
+- 桌面端已新增 `DesktopPlaybackController`，当前使用 `JavaFX MediaPlayer` 播放服务端 HTTP 音频流
+- 桌面端已新增底部播放条与展开详情面板，支持播放/暂停、拖动进度、展示歌曲信息与任务状态
+- 最近一次桌面编译验证命令为 `GRADLE_USER_HOME=/codes/music_worker/.gradle-user /codes/music_worker/android-app/gradlew -p /codes/music_worker/desktop-app compileKotlin`
+- 下一步应先完成 `M2 / M3` 的人工联调验证，再进入 `M4. 排行榜来源切换补齐`
 
 目标不是重新实现下载核心，也不是第一阶段就把 Python、代理和所有依赖全部封装进一个单文件绿色版，而是先做一个可稳定使用、可持续演进的桌面客户端。
 
@@ -120,6 +133,8 @@
 
 - `GET /api/health`
 - `GET /api/proxy/current`
+- `GET /api/charts/sources`
+- `GET /api/charts`
 - `POST /api/proxy/select`
 - `POST /api/search`
 - `POST /api/download`

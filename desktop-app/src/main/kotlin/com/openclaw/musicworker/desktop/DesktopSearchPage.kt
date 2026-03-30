@@ -37,6 +37,7 @@ internal fun SearchDownloadPage(
     onSortModeChanged: (SearchSortMode) -> Unit,
     onFilterModeChanged: (SearchFilterMode) -> Unit,
     onSearch: () -> Unit,
+    onPlayInApp: (SearchItem) -> Unit,
     onStartDownload: (SearchItem) -> Unit,
 ) {
     val visibleResults = uiState.search.visibleResults
@@ -66,6 +67,7 @@ internal fun SearchDownloadPage(
                 onSelectResult = onSelectResult,
                 onSortModeChanged = onSortModeChanged,
                 onFilterModeChanged = onFilterModeChanged,
+                onPlayInApp = onPlayInApp,
                 onStartDownload = onStartDownload,
                 onPreviewCover = { previewCover = it },
             )
@@ -153,6 +155,7 @@ private fun SearchResultsPanel(
     onSelectResult: (String) -> Unit,
     onSortModeChanged: (SearchSortMode) -> Unit,
     onFilterModeChanged: (SearchFilterMode) -> Unit,
+    onPlayInApp: (SearchItem) -> Unit,
     onStartDownload: (SearchItem) -> Unit,
     onPreviewCover: (SearchCoverPreview) -> Unit,
 ) {
@@ -178,6 +181,7 @@ private fun SearchResultsPanel(
                 selectedItem = selectedItem,
                 currentTask = uiState.download.currentTask,
                 isStarting = uiState.download.isStarting,
+                playbackState = uiState.playback,
             )
 
             when {
@@ -222,8 +226,10 @@ private fun SearchResultsPanel(
                             selectedResultId = uiState.search.selectedResultId,
                             currentTask = uiState.download.currentTask,
                             isStarting = uiState.download.isStarting,
+                            playbackState = uiState.playback,
                             hasActiveDownload = hasActiveDownload,
                             onSelectResult = onSelectResult,
+                            onPlayInApp = onPlayInApp,
                             onStartDownload = onStartDownload,
                             onPreviewCover = onPreviewCover,
                         )

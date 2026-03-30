@@ -49,10 +49,21 @@ private enum class StatusChipTone {
 @Composable
 fun DesktopApp() {
     val appState = remember { DesktopAppState() }
+    val playbackController = remember(appState) {
+        DesktopPlaybackController(
+            onPlayingChanged = appState::onPlaybackStateChanged,
+            onBufferingChanged = appState::onPlaybackBufferingChanged,
+            onProgressChanged = appState::onPlaybackProgressChanged,
+            onPlaybackCompleted = appState::onPlaybackCompleted,
+            onPlaybackError = appState::onPlaybackError,
+        )
+    }
     val uiState by appState.uiState.collectAsState()
     val hasActiveDownload = uiState.download.isStarting ||
         uiState.download.isExporting ||
-        uiState.download.currentTask?.status in setOf("queued", "running")
+        uiState.download.currentTask?.status in setOf("queued", "running") ||
+        uiState.playback.isPreparing ||
+        uiState.playback.currentTask?.status in setOf("queued", "running")
 
     LaunchedEffect(appState) {
         appState.initialize()
@@ -60,7 +71,22 @@ fun DesktopApp() {
 
     DisposableEffect(appState) {
         onDispose {
+            playbackController.close()
             appState.close()
+        }
+    }
+
+    LaunchedEffect(uiState.playback.currentMusicId, uiState.playback.playbackUrl) {
+        if (uiState.playback.playbackUrl.isNullOrBlank()) {
+            playbackController.stop()
+        }
+    }
+
+    LaunchedEffect(uiState.playback.playRequestToken, uiState.playback.playbackUrl) {
+        val playbackUrl = uiState.playback.playbackUrl
+        val requestToken = uiState.playback.playRequestToken
+        if (!playbackUrl.isNullOrBlank() && requestToken > 0L) {
+            playbackController.play(playbackUrl, requestToken)
         }
     }
 
@@ -87,6 +113,27 @@ fun DesktopApp() {
                     onOpenUpdate = appState::downloadOrOpenAppUpdate,
                 )
             },
+            bottomBar = {
+                DesktopPlayerBar(
+                    playbackState = uiState.playback,
+                    onTogglePlayback = {
+                        val playback = uiState.playback
+                        if (playback.isPlaying) {
+                            playbackController.pause()
+                        } else {
+                            val playbackUrl = playback.playbackUrl
+                            if (!playbackUrl.isNullOrBlank() && playback.playRequestToken > 0L) {
+                                playbackController.play(playbackUrl, playback.playRequestToken)
+                            }
+                        }
+                    },
+                    onSeekTo = playbackController::seekTo,
+                    onDismiss = {
+                        playbackController.stop()
+                        appState.clearPlayback()
+                    },
+                )
+            },
         ) {
             when (uiState.currentPage) {
                 DesktopPage.OVERVIEW -> OverviewPage(
@@ -105,7 +152,14 @@ fun DesktopApp() {
                     onSortModeChanged = appState::updateSearchSortMode,
                     onFilterModeChanged = appState::updateSearchFilterMode,
                     onSearch = appState::search,
+                    onPlayInApp = appState::playInApp,
                     onStartDownload = appState::startDownload,
+                )
+                DesktopPage.CHARTS -> ChartsPage(
+                    uiState = uiState,
+                    onRefresh = { appState.refreshCharts(forceRefresh = true) },
+                    onSelectRegion = appState::selectChartRegion,
+                    onSearchSong = appState::searchChartItem,
                 )
                 DesktopPage.OPERATIONS -> OperationsPage(
                     uiState = uiState,

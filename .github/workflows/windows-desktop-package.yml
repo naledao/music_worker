@@ -32,8 +32,8 @@ jobs:
       - name: Set Up Gradle Cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Package EXE And MSI
-        run: .\android-app\gradlew.bat -p .\desktop-app clean packageReleaseExe packageReleaseMsi
+      - name: Package EXE
+        run: .\android-app\gradlew.bat -p .\desktop-app clean packageReleaseExe
 
       - name: Dump jpackage logs on failure
         if: failure()
@@ -60,22 +60,21 @@ jobs:
             Write-Host "Compose tmp directory not found."
           }
 
-      - name: Verify Windows Installers
+      - name: Verify Windows Installer
         run: |
           $installers = Get-ChildItem -Path ".\desktop-app\build\compose\binaries" -Recurse -File |
-            Where-Object { $_.Extension -in ".exe", ".msi" }
+            Where-Object { $_.Extension -eq ".exe" }
           if (-not $installers) {
-            throw "No Windows installer artifacts were produced."
+            throw "No Windows EXE installer artifacts were produced."
           }
           $installers | ForEach-Object { Write-Host "Produced installer: $($_.FullName)" }
 
-      - name: Upload Windows Installers
+      - name: Upload Windows Installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-desktop-installers
+          name: windows-desktop-exe-installer
           path: |
             desktop-app/build/compose/binaries/**/*.exe
-            desktop-app/build/compose/binaries/**/*.msi
           if-no-files-found: error
 
       - name: Publish Release Assets
@@ -84,5 +83,4 @@ jobs:
         with:
           files: |
             desktop-app/build/compose/binaries/**/*.exe
-            desktop-app/build/compose/binaries/**/*.msi
           generate_release_notes: true

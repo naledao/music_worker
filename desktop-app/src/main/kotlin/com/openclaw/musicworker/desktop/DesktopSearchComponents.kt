@@ -57,7 +57,7 @@ private val SearchPreviewMaxWidthFraction = 0.82f
 private val SearchPreviewMaxHeightFraction = 0.8f
 private val SearchDurationColumnWidth = 68.dp
 private val SearchStatusColumnWidth = 92.dp
-private val SearchActionColumnWidth = 100.dp
+private val SearchActionColumnWidth = 196.dp
 private val SearchCoverCache = ConcurrentHashMap<String, ImageBitmap>()
 private val SearchCoverFailedUrls = ConcurrentHashMap.newKeySet<String>()
 private val SearchCoverPointerIcon = PointerIcon(Cursor(Cursor.HAND_CURSOR))
@@ -130,8 +130,9 @@ internal fun SearchContextStrip(
     selectedItem: SearchItem?,
     currentTask: DownloadTask?,
     isStarting: Boolean,
+    playbackState: DesktopPlaybackUiState,
 ) {
-    if (activeKeyword.isBlank() && selectedItem == null) {
+    if (activeKeyword.isBlank() && selectedItem == null && !hasPlaybackContext(playbackState)) {
         return
     }
 
@@ -162,7 +163,17 @@ internal fun SearchContextStrip(
                     modifier = Modifier.weight(0.62f),
                 )
                 SearchCompactBadge(value = item.duration?.let(::formatDurationCompact) ?: "-")
-                SearchCompactBadge(value = buildSearchItemStatusText(item, currentTask, isStarting))
+                SearchCompactBadge(value = buildSearchItemStatusText(item, currentTask, isStarting, playbackState))
+            }
+
+            if (hasPlaybackContext(playbackState)) {
+                SearchContextBlock(
+                    label = "当前播放",
+                    value = playbackState.currentTitle ?: buildPlaybackStatusText(playbackState),
+                    detail = buildPlaybackContextDetail(playbackState),
+                    modifier = Modifier.weight(if (selectedItem != null) 0.72f else 1f),
+                )
+                SearchCompactBadge(value = buildPlaybackStatusText(playbackState))
             }
         }
     }
@@ -208,8 +219,10 @@ internal fun SearchResultsList(
     selectedResultId: String?,
     currentTask: DownloadTask?,
     isStarting: Boolean,
+    playbackState: DesktopPlaybackUiState,
     hasActiveDownload: Boolean,
     onSelectResult: (String) -> Unit,
+    onPlayInApp: (SearchItem) -> Unit,
     onStartDownload: (SearchItem) -> Unit,
     onPreviewCover: (SearchCoverPreview) -> Unit,
 ) {
@@ -226,8 +239,10 @@ internal fun SearchResultsList(
                 isSelected = selectedResultId == item.id,
                 currentTask = currentTask,
                 isStarting = isStarting,
+                playbackState = playbackState,
                 hasActiveDownload = hasActiveDownload,
                 onSelect = { onSelectResult(item.id) },
+                onPlayInApp = { onPlayInApp(item) },
                 onStartDownload = { onStartDownload(item) },
                 onPreviewCover = {
                     onSelectResult(item.id)
@@ -249,8 +264,10 @@ private fun SearchResultRow(
     isSelected: Boolean,
     currentTask: DownloadTask?,
     isStarting: Boolean,
+    playbackState: DesktopPlaybackUiState,
     hasActiveDownload: Boolean,
     onSelect: () -> Unit,
+    onPlayInApp: () -> Unit,
     onStartDownload: () -> Unit,
     onPreviewCover: () -> Unit,
 ) {
@@ -320,25 +337,49 @@ private fun SearchResultRow(
             )
 
             SearchCompactBadge(
-                value = buildSearchItemStatusText(item, currentTask, isStarting),
+                value = buildSearchItemStatusText(item, currentTask, isStarting, playbackState),
                 modifier = Modifier.width(SearchStatusColumnWidth),
             )
 
-            SearchResultActionButton(
-                isEmphasized = isSelected || currentTask?.musicId == item.id,
-                onClick = onStartDownload,
-                enabled = !hasActiveDownload || currentTask?.musicId == item.id,
+            Row(
                 modifier = Modifier.width(SearchActionColumnWidth),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = downloadButtonText(
+                SearchResultActionButton(
+                    isEmphasized = playbackState.currentMusicId == item.id,
+                    onClick = onPlayInApp,
+                    enabled = playbackButtonEnabled(
                         item = item,
                         currentTask = currentTask,
-                        isStarting = isStarting,
+                        playbackState = playbackState,
+                        hasActiveDownload = hasActiveDownload,
                     ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = playbackButtonText(item, playbackState),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                SearchResultActionButton(
+                    isEmphasized = isSelected || currentTask?.musicId == item.id,
+                    onClick = onStartDownload,
+                    enabled = !hasActiveDownload || currentTask?.musicId == item.id,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = downloadButtonText(
+                            item = item,
+                            currentTask = currentTask,
+                            isStarting = isStarting,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
@@ -794,11 +835,48 @@ private fun downloadButtonText(item: SearchItem, currentTask: DownloadTask?, isS
     }
 }
 
+private fun playbackButtonText(item: SearchItem, playbackState: DesktopPlaybackUiState): String {
+    if (playbackState.currentMusicId != item.id) {
+        return "在线播放"
+    }
+
+    return when {
+        !playbackState.errorMessage.isNullOrBlank() -> "重试播放"
+        playbackState.isPreparing -> "准备中…"
+        playbackState.isBuffering -> "缓冲中…"
+        playbackState.isPlaying -> "播放中"
+        !playbackState.playbackUrl.isNullOrBlank() -> "待播放"
+        else -> "在线播放"
+    }
+}
+
+private fun playbackButtonEnabled(
+    item: SearchItem,
+    currentTask: DownloadTask?,
+    playbackState: DesktopPlaybackUiState,
+    hasActiveDownload: Boolean,
+): Boolean {
+    if (playbackState.currentMusicId == item.id && playbackState.isPreparing) {
+        return false
+    }
+
+    if (!hasActiveDownload) {
+        return true
+    }
+
+    return currentTask?.musicId == item.id || playbackState.currentMusicId == item.id
+}
+
 private fun buildSearchItemStatusText(
     item: SearchItem,
     currentTask: DownloadTask?,
     isStarting: Boolean,
+    playbackState: DesktopPlaybackUiState,
 ): String {
+    if (playbackState.currentMusicId == item.id) {
+        return buildPlaybackStatusText(playbackState)
+    }
+
     if (isStarting && currentTask == null) {
         return "准备中"
     }
@@ -814,4 +892,32 @@ private fun buildSearchItemStatusText(
         "failed" -> "失败"
         else -> currentTask.status.ifBlank { "未知" }
     }
+}
+
+private fun hasPlaybackContext(playbackState: DesktopPlaybackUiState): Boolean {
+    return playbackState.currentMusicId != null ||
+        !playbackState.currentTitle.isNullOrBlank() ||
+        playbackState.isPreparing ||
+        playbackState.isBuffering ||
+        playbackState.isPlaying ||
+        !playbackState.errorMessage.isNullOrBlank()
+}
+
+private fun buildPlaybackStatusText(playbackState: DesktopPlaybackUiState): String {
+    return when {
+        !playbackState.errorMessage.isNullOrBlank() -> "播放失败"
+        playbackState.isPreparing -> "准备播放"
+        playbackState.isBuffering -> "缓冲中"
+        playbackState.isPlaying -> "播放中"
+        !playbackState.playbackUrl.isNullOrBlank() -> "待播放"
+        else -> "未播放"
+    }
+}
+
+private fun buildPlaybackContextDetail(playbackState: DesktopPlaybackUiState): String? {
+    return playbackState.currentChannel
+        ?.takeIf { it.isNotBlank() }
+        ?: playbackState.message
+        ?: playbackState.errorMessage
+        ?: playbackState.currentTask?.let { "${it.status} / ${it.stage}" }
 }

@@ -1,6 +1,8 @@
 package com.openclaw.musicworker.desktop
 
 import com.openclaw.musicworker.shared.api.AppUpdateInfo
+import com.openclaw.musicworker.shared.api.ChartItem
+import com.openclaw.musicworker.shared.api.ChartSourceInfo
 import com.openclaw.musicworker.shared.api.DownloadTask
 import com.openclaw.musicworker.shared.api.HealthPayload
 import com.openclaw.musicworker.shared.api.ProxyInfo
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToLong
 
 enum class SearchSortMode(val label: String) {
     DEFAULT("默认"),
@@ -33,6 +36,19 @@ enum class SearchFilterMode(val label: String) {
     UNDER_4_MIN("短于 4 分钟"),
     BETWEEN_4_AND_10_MIN("4-10 分钟"),
     OVER_10_MIN("长于 10 分钟"),
+}
+
+private const val DEFAULT_CHART_SOURCE = "apple_music"
+private const val DEFAULT_CHART_TYPE = "songs"
+private const val DEFAULT_CHART_PERIOD = "daily"
+private const val DEFAULT_CHART_REGION = "us"
+private const val DEFAULT_CHART_LIMIT = 50
+
+private fun approximateDurationMs(durationSec: Double?): Long? {
+    return durationSec
+        ?.takeIf { it > 0 }
+        ?.times(1000.0)
+        ?.roundToLong()
 }
 
 data class DesktopHealthUiState(
@@ -53,6 +69,21 @@ data class DesktopSearchUiState(
     val errorMessage: String? = null,
 )
 
+data class DesktopChartsUiState(
+    val availableSources: List<ChartSourceInfo> = emptyList(),
+    val selectedSource: String = DEFAULT_CHART_SOURCE,
+    val selectedType: String = DEFAULT_CHART_TYPE,
+    val selectedPeriod: String = DEFAULT_CHART_PERIOD,
+    val selectedRegion: String = DEFAULT_CHART_REGION,
+    val title: String = "",
+    val updatedAt: String? = null,
+    val fromCache: Boolean = false,
+    val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
+    val items: List<ChartItem> = emptyList(),
+    val errorMessage: String? = null,
+)
+
 data class DesktopDownloadUiState(
     val currentTask: DownloadTask? = null,
     val selectedTitle: String? = null,
@@ -69,6 +100,25 @@ data class DesktopDownloadUiState(
     val errorMessage: String? = null,
 )
 
+data class DesktopPlaybackUiState(
+    val currentMusicId: String? = null,
+    val currentTitle: String? = null,
+    val currentChannel: String? = null,
+    val currentDurationSec: Double? = null,
+    val currentPositionMs: Long = 0L,
+    val playbackDurationMs: Long? = null,
+    val currentCoverUrl: String? = null,
+    val currentTask: DownloadTask? = null,
+    val playbackUrl: String? = null,
+    val source: String? = null,
+    val isPreparing: Boolean = false,
+    val isBuffering: Boolean = false,
+    val playRequestToken: Long = 0L,
+    val isPlaying: Boolean = false,
+    val message: String? = null,
+    val errorMessage: String? = null,
+)
+
 data class DesktopOpsUiState(
     val isLoading: Boolean = false,
     val proxy: ProxyInfo? = null,
@@ -80,8 +130,8 @@ data class DesktopOpsUiState(
 )
 
 data class DesktopUpdateUiState(
-    val currentVersionName: String = "0.1.1",
-    val currentVersionCode: Long = 2L,
+    val currentVersionName: String = "0.1.8",
+    val currentVersionCode: Long = 9L,
     val availableUpdate: AppUpdateInfo? = null,
     val downloadedInstallerPath: String? = null,
     val downloadedInstallerName: String? = null,
@@ -100,10 +150,19 @@ data class DesktopUiState(
     val hasCustomDownloadDirectory: Boolean = false,
     val health: DesktopHealthUiState = DesktopHealthUiState(),
     val search: DesktopSearchUiState = DesktopSearchUiState(),
+    val charts: DesktopChartsUiState = DesktopChartsUiState(),
     val download: DesktopDownloadUiState = DesktopDownloadUiState(),
+    val playback: DesktopPlaybackUiState = DesktopPlaybackUiState(),
     val ops: DesktopOpsUiState = DesktopOpsUiState(),
     val update: DesktopUpdateUiState = DesktopUpdateUiState(),
     val message: String? = null,
+)
+
+private data class DesktopChartSelection(
+    val sourceId: String,
+    val type: String,
+    val period: String,
+    val regionId: String,
 )
 
 class DesktopAppState(
@@ -117,7 +176,9 @@ class DesktopAppState(
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private var pollJob: Job? = null
+    private var playbackJob: Job? = null
     private var pollingTaskId: String? = null
+    private var playbackRequestToken = 0L
     private val initialCustomDownloadDirectoryPath = settingsStore.currentDownloadDirectoryPath()
 
     private val _uiState = MutableStateFlow(
@@ -140,11 +201,18 @@ class DesktopAppState(
         refreshHealth()
         refreshOperations()
         refreshLatestTask()
+        refreshCharts()
     }
 
     fun switchPage(page: DesktopPage) {
         _uiState.update { state ->
             state.copy(currentPage = page)
+        }
+        if (page == DesktopPage.CHARTS) {
+            val chartsState = _uiState.value.charts
+            if (!chartsState.isLoading && !chartsState.isRefreshing && chartsState.items.isEmpty()) {
+                refreshCharts()
+            }
         }
     }
 
@@ -165,6 +233,379 @@ class DesktopAppState(
         _uiState.update { state ->
             state.copy(search = state.search.copy(input = value))
         }
+    }
+
+    fun preparePlayback(item: SearchItem) {
+        _uiState.update { state ->
+            state.copy(
+                playback = state.playback.copy(
+                    currentMusicId = item.id,
+                    currentTitle = item.title,
+                    currentChannel = item.channel,
+                    currentDurationSec = item.duration,
+                    currentPositionMs = 0L,
+                    playbackDurationMs = approximateDurationMs(item.duration),
+                    currentCoverUrl = item.cover,
+                    currentTask = null,
+                    playbackUrl = null,
+                    source = "server",
+                    isPreparing = true,
+                    isBuffering = false,
+                    playRequestToken = 0L,
+                    isPlaying = false,
+                    message = "正在通知服务端准备音频…",
+                    errorMessage = null,
+                ),
+            )
+        }
+    }
+
+    fun playInApp(item: SearchItem) {
+        playbackJob?.cancel()
+        scope.launch {
+            preparePlayback(item)
+
+            runCatching { apiClient.startDownload(_uiState.value.serverConfig, item.id) }
+                .onSuccess { task ->
+                    updatePlaybackTask(item, task)
+                    when (task.status) {
+                        "finished" -> {
+                            markPlaybackReady(item, task)
+                            refreshHealth()
+                        }
+                        "failed" -> {
+                            _uiState.update { state ->
+                                state.copy(
+                                    playback = state.playback.copy(
+                                        currentMusicId = item.id,
+                                        currentTitle = item.title,
+                                        currentChannel = item.channel,
+                                        currentDurationSec = item.duration,
+                                        currentPositionMs = 0L,
+                                        playbackDurationMs = approximateDurationMs(item.duration),
+                                        currentCoverUrl = item.cover,
+                                        currentTask = task,
+                                        playbackUrl = null,
+                                        isPreparing = false,
+                                        isBuffering = false,
+                                        playRequestToken = 0L,
+                                        isPlaying = false,
+                                        message = null,
+                                        errorMessage = task.errorMessage ?: "准备播放失败",
+                                    ),
+                                )
+                            }
+                            refreshHealth()
+                        }
+                        else -> beginPlaybackPolling(item, task.taskId)
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.update { state ->
+                        state.copy(
+                            playback = state.playback.copy(
+                                currentMusicId = item.id,
+                                currentTitle = item.title,
+                                currentChannel = item.channel,
+                                currentDurationSec = item.duration,
+                                currentPositionMs = 0L,
+                                playbackDurationMs = approximateDurationMs(item.duration),
+                                currentCoverUrl = item.cover,
+                                currentTask = null,
+                                playbackUrl = null,
+                                isPreparing = false,
+                                isBuffering = false,
+                                playRequestToken = 0L,
+                                isPlaying = false,
+                                message = null,
+                                errorMessage = error.message ?: "准备播放失败",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun updatePlaybackTask(item: SearchItem, task: DownloadTask) {
+        _uiState.update { state ->
+            state.copy(
+                playback = state.playback.copy(
+                    currentMusicId = item.id,
+                    currentTitle = item.title,
+                    currentChannel = item.channel,
+                    currentDurationSec = item.duration,
+                    currentPositionMs = 0L,
+                    playbackDurationMs = approximateDurationMs(item.duration),
+                    currentCoverUrl = item.cover,
+                    currentTask = task,
+                    playbackUrl = null,
+                    source = "server",
+                    isPreparing = task.status != "finished",
+                    isBuffering = false,
+                    playRequestToken = 0L,
+                    isPlaying = false,
+                    message = if (task.status == "finished") "服务端音频已准备完成" else "服务端正在准备音频…",
+                    errorMessage = null,
+                ),
+            )
+        }
+    }
+
+    fun markPlaybackReady(item: SearchItem, task: DownloadTask) {
+        _uiState.update { state ->
+            state.copy(
+                playback = state.playback.copy(
+                    currentMusicId = item.id,
+                    currentTitle = item.title,
+                    currentChannel = item.channel,
+                    currentDurationSec = item.duration,
+                    currentPositionMs = 0L,
+                    playbackDurationMs = approximateDurationMs(item.duration),
+                    currentCoverUrl = item.cover,
+                    currentTask = task,
+                    playbackUrl = apiClient.taskFileUrl(state.serverConfig, task.taskId),
+                    source = "server",
+                    isPreparing = false,
+                    isBuffering = false,
+                    playRequestToken = nextPlaybackRequestToken(),
+                    isPlaying = false,
+                    message = "服务端音频已准备完成，等待桌面端开始播放",
+                    errorMessage = null,
+                ),
+            )
+        }
+    }
+
+    fun onPlaybackStateChanged(requestToken: Long, isPlaying: Boolean) {
+        updatePlaybackIfTokenMatches(requestToken) { playback ->
+            playback.copy(
+                isPlaying = isPlaying,
+                errorMessage = if (isPlaying) null else playback.errorMessage,
+                message = when {
+                    playback.playbackUrl.isNullOrBlank() -> playback.message
+                    playback.isBuffering -> "正在缓冲音频…"
+                    isPlaying -> "正在桌面端播放"
+                    else -> "已暂停，可直接继续播放"
+                },
+            )
+        }
+    }
+
+    fun onPlaybackBufferingChanged(requestToken: Long, isBuffering: Boolean) {
+        updatePlaybackIfTokenMatches(requestToken) { playback ->
+            playback.copy(
+                isBuffering = isBuffering,
+                errorMessage = if (isBuffering) null else playback.errorMessage,
+                message = when {
+                    playback.playbackUrl.isNullOrBlank() -> playback.message
+                    isBuffering -> "正在缓冲音频…"
+                    playback.isPlaying -> "正在桌面端播放"
+                    else -> playback.message
+                },
+            )
+        }
+    }
+
+    fun onPlaybackProgressChanged(requestToken: Long, positionMs: Long, durationMs: Long?) {
+        updatePlaybackIfTokenMatches(requestToken) { playback ->
+            val resolvedDurationMs = durationMs
+                ?.takeIf { it > 0L }
+                ?: playback.playbackDurationMs
+                ?: approximateDurationMs(playback.currentDurationSec)
+            val safePositionMs = if (resolvedDurationMs != null) {
+                positionMs.coerceIn(0L, resolvedDurationMs)
+            } else {
+                positionMs.coerceAtLeast(0L)
+            }
+            playback.copy(
+                currentPositionMs = safePositionMs,
+                playbackDurationMs = resolvedDurationMs,
+                currentDurationSec = resolvedDurationMs?.let { it / 1000.0 } ?: playback.currentDurationSec,
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun onPlaybackCompleted(requestToken: Long) {
+        updatePlaybackIfTokenMatches(requestToken) { playback ->
+            playback.copy(
+                currentPositionMs = playback.playbackDurationMs ?: playback.currentPositionMs,
+                isBuffering = false,
+                isPlaying = false,
+                errorMessage = null,
+                message = "播放结束，可重新播放",
+            )
+        }
+    }
+
+    fun onPlaybackError(requestToken: Long, message: String) {
+        updatePlaybackIfTokenMatches(requestToken) { playback ->
+            playback.copy(
+                isPreparing = false,
+                isBuffering = false,
+                isPlaying = false,
+                errorMessage = message,
+            )
+        }
+    }
+
+    fun clearPlayback() {
+        _uiState.update { state ->
+            state.copy(playback = DesktopPlaybackUiState())
+        }
+    }
+
+    fun refreshCharts(forceRefresh: Boolean = false) {
+        scope.launch {
+            val currentCharts = _uiState.value.charts
+            val hasLoadedContent = currentCharts.items.isNotEmpty() || currentCharts.title.isNotBlank()
+
+            _uiState.update { state ->
+                state.copy(
+                    charts = state.charts.copy(
+                        isLoading = !hasLoadedContent,
+                        isRefreshing = hasLoadedContent,
+                        errorMessage = null,
+                    ),
+                )
+            }
+
+            val availableSources = if (currentCharts.availableSources.isNotEmpty()) {
+                currentCharts.availableSources
+            } else {
+                runCatching { apiClient.getChartSources(_uiState.value.serverConfig) }
+                    .getOrElse { error ->
+                        logFailure("load chart sources failed", error, "baseUrl=${_uiState.value.serverConfig.baseUrl}")
+                        _uiState.update { state ->
+                            state.copy(
+                                charts = state.charts.copy(
+                                    isLoading = false,
+                                    isRefreshing = false,
+                                    errorMessage = error.message ?: "加载榜单来源失败",
+                                ),
+                            )
+                        }
+                        return@launch
+                    }
+            }
+
+            val selection = resolveChartSelection(
+                currentState = _uiState.value.charts,
+                availableSources = availableSources,
+            )
+
+            _uiState.update { state ->
+                state.copy(
+                    charts = state.charts.copy(
+                        availableSources = availableSources,
+                        selectedSource = selection.sourceId,
+                        selectedType = selection.type,
+                        selectedPeriod = selection.period,
+                        selectedRegion = selection.regionId,
+                    ),
+                )
+            }
+
+            runCatching {
+                apiClient.getCharts(
+                    config = _uiState.value.serverConfig,
+                    source = selection.sourceId,
+                    type = selection.type,
+                    period = selection.period,
+                    region = selection.regionId,
+                    limit = DEFAULT_CHART_LIMIT,
+                    forceRefresh = forceRefresh,
+                )
+            }
+                .onSuccess { payload ->
+                    DesktopFileLogger.info(
+                        "desktop charts loaded source=${payload.source} region=${payload.region} count=${payload.items.size} fromCache=${payload.fromCache}",
+                    )
+                    _uiState.update { state ->
+                        state.copy(
+                            charts = state.charts.copy(
+                                availableSources = availableSources,
+                                selectedSource = payload.source.ifBlank { selection.sourceId },
+                                selectedType = payload.type.ifBlank { selection.type },
+                                selectedPeriod = payload.period.ifBlank { selection.period },
+                                selectedRegion = payload.region.ifBlank { selection.regionId },
+                                title = payload.title,
+                                updatedAt = payload.updatedAt,
+                                fromCache = payload.fromCache,
+                                isLoading = false,
+                                isRefreshing = false,
+                                items = payload.items,
+                                errorMessage = null,
+                            ),
+                            message = "排行榜已更新：${payload.title}",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    logFailure(
+                        "load charts failed",
+                        error,
+                        "region=${selection.regionId} baseUrl=${_uiState.value.serverConfig.baseUrl}",
+                    )
+                    _uiState.update { state ->
+                        state.copy(
+                            charts = state.charts.copy(
+                                availableSources = availableSources,
+                                selectedSource = selection.sourceId,
+                                selectedType = selection.type,
+                                selectedPeriod = selection.period,
+                                selectedRegion = selection.regionId,
+                                isLoading = false,
+                                isRefreshing = false,
+                                errorMessage = error.message ?: "加载排行榜失败",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun selectChartRegion(regionId: String) {
+        val currentCharts = _uiState.value.charts
+        val sourceInfo = currentCharts.availableSources.firstOrNull { it.id == currentCharts.selectedSource }
+        val targetRegion = sourceInfo
+            ?.regions
+            ?.firstOrNull { it.id == regionId }
+            ?.id
+            ?: return
+
+        _uiState.update { state ->
+            state.copy(
+                charts = state.charts.copy(
+                    selectedRegion = targetRegion,
+                    errorMessage = null,
+                ),
+            )
+        }
+        refreshCharts()
+    }
+
+    fun searchChartItem(item: ChartItem) {
+        val keyword = item.searchKeyword.ifBlank {
+            listOf(item.title, item.artist)
+                .joinToString(" ")
+                .trim()
+        }
+        if (keyword.isBlank()) {
+            _uiState.update { state ->
+                state.copy(
+                    charts = state.charts.copy(
+                        errorMessage = "榜单项缺少可搜索关键词",
+                    ),
+                )
+            }
+            return
+        }
+
+        _uiState.update { state ->
+            state.copy(currentPage = DesktopPage.SEARCH)
+        }
+        runSearch(keyword)
     }
 
     fun selectSearchResult(itemId: String) {
@@ -195,6 +636,7 @@ class DesktopAppState(
         _uiState.update { state ->
             state.copy(
                 download = DesktopDownloadUiState(),
+                charts = DesktopChartsUiState(),
                 ops = DesktopOpsUiState(),
                 update = state.update.copy(
                     availableUpdate = null,
@@ -213,6 +655,7 @@ class DesktopAppState(
         refreshHealth()
         refreshOperations()
         refreshLatestTask()
+        refreshCharts()
     }
 
     fun setDownloadDirectory(path: String) {
@@ -446,10 +889,15 @@ class DesktopAppState(
             return
         }
 
+        runSearch(keyword)
+    }
+
+    private fun runSearch(keyword: String) {
         scope.launch {
             _uiState.update { state ->
                 state.copy(
                     search = state.search.copy(
+                        input = keyword,
                         activeKeyword = keyword,
                         isSearching = true,
                         errorMessage = null,
@@ -608,6 +1056,11 @@ class DesktopAppState(
                     _uiState.update { state ->
                         state.copy(
                             download = nextDownload,
+                            playback = if (state.playback.currentTask?.taskId == taskToDisplay?.taskId && taskToDisplay != null) {
+                                state.playback.copy(currentTask = taskToDisplay)
+                            } else {
+                                state.playback
+                            },
                         )
                     }
 
@@ -842,6 +1295,14 @@ class DesktopAppState(
                                 errorMessage = task.errorMessage,
                             )
                         },
+                        playback = if (state.playback.currentTask?.taskId == task.taskId) {
+                            state.playback.copy(
+                                currentTask = task,
+                                isPreparing = state.playback.isPreparing && task.status in ACTIVE_TASK_STATUSES,
+                            )
+                        } else {
+                            state.playback
+                        },
                         message = if (task.status == "finished") {
                             "下载任务已完成：${task.filename ?: task.musicId}"
                         } else {
@@ -856,6 +1317,59 @@ class DesktopAppState(
                     )
                     maybeExportFinishedTask(task)
                     stopPolling()
+                    refreshHealth()
+                    break
+                }
+
+                delay(TASK_POLL_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun beginPlaybackPolling(item: SearchItem, taskId: String) {
+        playbackJob?.cancel()
+        playbackJob = scope.launch {
+            while (isActive) {
+                val taskResult = runCatching { apiClient.getTask(_uiState.value.serverConfig, taskId) }
+                if (taskResult.isFailure) {
+                    val error = taskResult.exceptionOrNull()
+                    _uiState.update { state ->
+                        state.copy(
+                            playback = state.playback.copy(
+                                isPreparing = false,
+                                isBuffering = false,
+                                isPlaying = false,
+                                errorMessage = error?.message ?: "轮询播放任务失败",
+                            ),
+                        )
+                    }
+                    break
+                }
+
+                val task = taskResult.getOrThrow()
+                _uiState.update { state ->
+                    state.copy(
+                        playback = state.playback.copy(
+                            currentMusicId = item.id,
+                            currentTitle = item.title,
+                            currentChannel = item.channel,
+                            currentDurationSec = item.duration,
+                            currentCoverUrl = item.cover,
+                            currentTask = task,
+                            isPreparing = task.status in ACTIVE_TASK_STATUSES,
+                            message = if (task.status == "finished") "服务端音频已准备完成" else "服务端正在准备音频…",
+                            errorMessage = task.errorMessage,
+                        ),
+                    )
+                }
+
+                if (task.status == "finished") {
+                    markPlaybackReady(item, task)
+                    refreshHealth()
+                    break
+                }
+
+                if (task.status == "failed") {
                     refreshHealth()
                     break
                 }
@@ -968,7 +1482,29 @@ class DesktopAppState(
     fun close() {
         DesktopFileLogger.info("DesktopAppState closing")
         stopPolling()
+        playbackJob?.cancel()
         scope.cancel()
+    }
+
+    private fun nextPlaybackRequestToken(): Long {
+        playbackRequestToken += 1L
+        return playbackRequestToken
+    }
+
+    private fun updatePlaybackIfTokenMatches(
+        requestToken: Long,
+        transform: (DesktopPlaybackUiState) -> DesktopPlaybackUiState,
+    ) {
+        if (requestToken <= 0L) {
+            return
+        }
+        _uiState.update { state ->
+            if (state.playback.playRequestToken != requestToken) {
+                state
+            } else {
+                state.copy(playback = transform(state.playback))
+            }
+        }
     }
 
     private fun logFailure(action: String, error: Throwable, context: String? = null) {
@@ -980,6 +1516,35 @@ class DesktopAppState(
             }
         }
         DesktopFileLogger.error(message, error)
+    }
+
+    private fun resolveChartSelection(
+        currentState: DesktopChartsUiState,
+        availableSources: List<ChartSourceInfo>,
+    ): DesktopChartSelection {
+        if (availableSources.isEmpty()) {
+            return DesktopChartSelection(
+                sourceId = currentState.selectedSource.ifBlank { DEFAULT_CHART_SOURCE },
+                type = currentState.selectedType.ifBlank { DEFAULT_CHART_TYPE },
+                period = currentState.selectedPeriod.ifBlank { DEFAULT_CHART_PERIOD },
+                regionId = currentState.selectedRegion.ifBlank { DEFAULT_CHART_REGION },
+            )
+        }
+
+        val sourceInfo = availableSources.firstOrNull { it.id == currentState.selectedSource } ?: availableSources.first()
+        return DesktopChartSelection(
+            sourceId = sourceInfo.id,
+            type = sourceInfo.types.firstOrNull { it == currentState.selectedType }
+                ?: sourceInfo.types.firstOrNull()
+                ?: currentState.selectedType.ifBlank { DEFAULT_CHART_TYPE },
+            period = sourceInfo.periods.firstOrNull { it == currentState.selectedPeriod }
+                ?: sourceInfo.periods.firstOrNull()
+                ?: currentState.selectedPeriod.ifBlank { DEFAULT_CHART_PERIOD },
+            regionId = sourceInfo.regions.firstOrNull { it.id == currentState.selectedRegion }
+                ?.id
+                ?: sourceInfo.regions.firstOrNull()?.id
+                ?: currentState.selectedRegion.ifBlank { DEFAULT_CHART_REGION },
+        )
     }
 
     private companion object {

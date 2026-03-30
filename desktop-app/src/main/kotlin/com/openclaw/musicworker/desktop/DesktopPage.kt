@@ -12,6 +12,10 @@ enum class DesktopPage(
         title = "搜索下载",
         summary = "搜索歌曲并发起下载",
     ),
+    CHARTS(
+        title = "排行榜",
+        summary = "查看榜单并带入搜索链路",
+    ),
     OPERATIONS(
         title = "代理日志",
         summary = "节点切换与日志排障",

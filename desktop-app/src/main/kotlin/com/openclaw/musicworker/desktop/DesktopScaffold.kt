@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -26,6 +27,7 @@ fun DesktopScaffold(
     onPageSelected: (DesktopPage) -> Unit,
     topBar: @Composable () -> Unit,
     taskPanel: @Composable ColumnScope.() -> Unit,
+    bottomBar: @Composable () -> Unit = {},
     content: @Composable BoxScope.() -> Unit,
 ) {
     Surface(
@@ -37,7 +39,8 @@ fun DesktopScaffold(
 
             Row(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
@@ -86,6 +89,8 @@ fun DesktopScaffold(
                     )
                 }
             }
+
+            bottomBar()
         }
     }
 }

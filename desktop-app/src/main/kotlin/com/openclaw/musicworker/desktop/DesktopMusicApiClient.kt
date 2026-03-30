@@ -1,6 +1,9 @@
 package com.openclaw.musicworker.desktop
 
 import com.openclaw.musicworker.shared.api.AppUpdateInfo
+import com.openclaw.musicworker.shared.api.ChartPayload
+import com.openclaw.musicworker.shared.api.ChartSourceInfo
+import com.openclaw.musicworker.shared.api.ChartSourcesPayload
 import com.openclaw.musicworker.shared.api.HealthPayload
 import com.openclaw.musicworker.shared.api.DownloadRequest
 import com.openclaw.musicworker.shared.api.DownloadTask
@@ -23,7 +26,9 @@ import io.ktor.http.contentType
 import java.io.IOException
 import java.io.OutputStream
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,12 +60,42 @@ class DesktopMusicApiClient {
         return decodePayload(rawBody)
     }
 
+    suspend fun getChartSources(config: ApiServerConfig): List<ChartSourceInfo> {
+        val rawBody = httpClient.get("${config.baseUrl}/api/charts/sources").body<String>()
+        return decodePayload<ChartSourcesPayload>(rawBody).sources
+    }
+
+    suspend fun getCharts(
+        config: ApiServerConfig,
+        source: String = DEFAULT_CHART_SOURCE,
+        type: String = DEFAULT_CHART_TYPE,
+        period: String = DEFAULT_CHART_PERIOD,
+        region: String = DEFAULT_CHART_REGION,
+        limit: Int = DEFAULT_CHART_LIMIT,
+        forceRefresh: Boolean = false,
+    ): ChartPayload {
+        val query = buildList {
+            add("source=${encodeQueryValue(source)}")
+            add("type=${encodeQueryValue(type)}")
+            add("period=${encodeQueryValue(period)}")
+            add("region=${encodeQueryValue(region)}")
+            add("limit=${limit.coerceIn(1, MAX_CHART_LIMIT)}")
+            if (forceRefresh) {
+                add("force_refresh=1")
+            }
+        }.joinToString("&")
+        val rawBody = httpClient.get("${config.baseUrl}/api/charts?$query").body<String>()
+        return decodePayload(rawBody)
+    }
+
     suspend fun getAppUpdate(config: ApiServerConfig, platform: String = "desktop"): AppUpdateInfo {
         val normalizedPlatform = platform.lowercase(Locale.ROOT)
         val packageQuery = if (normalizedPlatform == "desktop") "&kind=exe" else ""
         val rawBody = httpClient.get("${config.baseUrl}/api/app/update?platform=$platform$packageQuery").body<String>()
         return decodePayload(rawBody)
     }
+
+    fun taskFileUrl(config: ApiServerConfig, taskId: String): String = "${config.baseUrl}/api/files/$taskId"
 
     suspend fun downloadTaskFile(
         config: ApiServerConfig,
@@ -69,7 +104,7 @@ class DesktopMusicApiClient {
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ) = withContext(Dispatchers.IO) {
         downloadBinary(
-            url = "${config.baseUrl}/api/files/$taskId",
+            url = taskFileUrl(config, taskId),
             outputStream = outputStream,
             expectedContentTypes = listOf("audio/", "application/octet-stream"),
             onProgress = onProgress,
@@ -253,9 +288,19 @@ class DesktopMusicApiClient {
         }.getOrDefault(rawBody)
     }
 
+    private fun encodeQueryValue(value: String): String {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+    }
+
     private companion object {
         const val DEFAULT_DOWNLOAD_BUFFER_SIZE = 64 * 1024
         const val DEFAULT_CONNECT_TIMEOUT_MS = 10_000
         const val DEFAULT_READ_TIMEOUT_MS = 300_000
+        const val DEFAULT_CHART_SOURCE = "apple_music"
+        const val DEFAULT_CHART_TYPE = "songs"
+        const val DEFAULT_CHART_PERIOD = "daily"
+        const val DEFAULT_CHART_REGION = "us"
+        const val DEFAULT_CHART_LIMIT = 50
+        const val MAX_CHART_LIMIT = 100
     }
 }

@@ -4,8 +4,14 @@ val desktopPackageName = "YinZhaoDesktop"
 val desktopDisplayName = "音爪"
 val desktopPackageVendor = "YinZhao"
 val desktopPackageDescription = "YinZhao Desktop Client"
-val desktopAppVersion = "0.1.7"
-val desktopAppVersionCode = 8L
+val desktopAppVersion = "0.1.8"
+val desktopAppVersionCode = 9L
+val javafxVersion = "17.0.2"
+val javafxPlatform = when {
+    System.getProperty("os.name").lowercase().contains("win") -> "win"
+    System.getProperty("os.name").lowercase().contains("mac") -> "mac"
+    else -> "linux"
+}
 
 plugins {
     kotlin("jvm") version "2.2.21"
@@ -27,6 +33,10 @@ dependencies {
     implementation("io.ktor:ktor-client-cio:3.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation("org.openjfx:javafx-base:$javafxVersion:$javafxPlatform")
+    implementation("org.openjfx:javafx-graphics:$javafxVersion:$javafxPlatform")
+    implementation("org.openjfx:javafx-swing:$javafxVersion:$javafxPlatform")
+    implementation("org.openjfx:javafx-media:$javafxVersion:$javafxPlatform")
 }
 
 compose.desktop {
@@ -38,7 +48,7 @@ compose.desktop {
         )
 
         nativeDistributions {
-            targetFormats(TargetFormat.Exe, TargetFormat.Msi)
+            targetFormats(TargetFormat.Exe)
             packageName = desktopPackageName
             packageVersion = desktopAppVersion
             description = desktopPackageDescription
