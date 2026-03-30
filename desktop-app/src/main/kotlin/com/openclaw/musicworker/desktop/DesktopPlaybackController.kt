@@ -1,6 +1,11 @@
 package com.openclaw.musicworker.desktop
 
+import java.io.IOException
+import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,6 +45,9 @@ internal class DesktopPlaybackController(
     @Volatile
     private var currentDurationMs: Long? = null
 
+    @Volatile
+    private var currentCacheFile: Path? = null
+
     fun play(url: String, requestToken: Long) {
         if (url.isBlank() || requestToken <= 0L || controlExecutor.isShutdown) {
             return
@@ -77,8 +85,8 @@ internal class DesktopPlaybackController(
 
     fun stop() {
         submitControl {
-            val existingPlayer = synchronized(stateLock) { detachCurrentPlayerLocked(resetIdentity = true) }
-            releasePlayer(existingPlayer)
+            val playback = synchronized(stateLock) { detachCurrentPlaybackLocked(resetIdentity = true) }
+            releasePlayback(playback)
         }
     }
 
@@ -97,8 +105,8 @@ internal class DesktopPlaybackController(
 
         runCatching {
             controlExecutor.submit<Unit> {
-                val existingPlayer = synchronized(stateLock) { detachCurrentPlayerLocked(resetIdentity = true) }
-                releasePlayer(existingPlayer)
+                val playback = synchronized(stateLock) { detachCurrentPlaybackLocked(resetIdentity = true) }
+                releasePlayback(playback)
             }.get(5, TimeUnit.SECONDS)
         }.onFailure { error ->
             DesktopFileLogger.warn("desktop playback close cleanup failed err=${error.message.orEmpty()}")
@@ -131,8 +139,13 @@ internal class DesktopPlaybackController(
         requestToken: Long,
         previousPlayer: BasicPlayer?,
     ): PlaybackAction.Start {
+        val previousPlayback = DetachedPlayback(
+            player = previousPlayer,
+            cacheFile = currentCacheFile,
+        )
         player = null
         currentDurationMs = null
+        currentCacheFile = null
         currentRequestToken = requestToken
         currentUrl = url
         val sessionId = sessionSequence.incrementAndGet()
@@ -144,7 +157,7 @@ internal class DesktopPlaybackController(
         player = newPlayer
 
         return PlaybackAction.Start(
-            previousPlayer = previousPlayer,
+            previousPlayback = previousPlayback,
             player = newPlayer,
             requestToken = requestToken,
             sessionId = sessionId,
@@ -153,20 +166,40 @@ internal class DesktopPlaybackController(
     }
 
     private fun startNewPlayer(action: PlaybackAction.Start) {
-        releasePlayer(action.previousPlayer)
+        releasePlayback(action.previousPlayback)
         onBufferingChanged(action.requestToken, true)
 
         runCatching {
-            action.player.open(URL(action.url))
+            val cacheFile = downloadPlaybackFile(action.url, action.sessionId)
+            val shouldContinue = synchronized(stateLock) {
+                if (player === action.player && currentSessionId == action.sessionId && currentRequestToken == action.requestToken) {
+                    currentCacheFile = cacheFile
+                    true
+                } else {
+                    false
+                }
+            }
+
+            if (!shouldContinue) {
+                deleteCacheFile(cacheFile)
+                return
+            }
+
+            action.player.open(cacheFile.toFile())
             action.player.play()
         }.onFailure { error ->
             DesktopFileLogger.error("desktop playback start failed url=${action.url}", error)
-            synchronized(stateLock) {
+            val playbackToRelease = synchronized(stateLock) {
                 if (player === action.player && currentSessionId == action.sessionId) {
-                    detachCurrentPlayerLocked(resetIdentity = true)
+                    detachCurrentPlaybackLocked(resetIdentity = true)
+                } else {
+                    DetachedPlayback(
+                        player = action.player,
+                        cacheFile = null,
+                    )
                 }
             }
-            releasePlayer(action.player)
+            releasePlayback(playbackToRelease)
             onBufferingChanged(action.requestToken, false)
             onPlayingChanged(action.requestToken, false)
             onPlaybackError(action.requestToken, buildPlaybackErrorMessage(error))
@@ -183,27 +216,31 @@ internal class DesktopPlaybackController(
             }
     }
 
-    private fun detachCurrentPlayerLocked(resetIdentity: Boolean): BasicPlayer? {
-        val existingPlayer = player
+    private fun detachCurrentPlaybackLocked(resetIdentity: Boolean): DetachedPlayback {
+        val playback = DetachedPlayback(
+            player = player,
+            cacheFile = currentCacheFile,
+        )
         player = null
         currentDurationMs = null
+        currentCacheFile = null
         if (resetIdentity) {
             currentRequestToken = 0L
             currentUrl = null
             currentSessionId = 0L
         }
-        return existingPlayer
+        return playback
     }
 
-    private fun releasePlayer(player: BasicPlayer?) {
-        if (player == null) {
-            return
+    private fun releasePlayback(playback: DetachedPlayback) {
+        playback.player?.let { player ->
+            runCatching { player.stop() }
+                .onFailure { error ->
+                    DesktopFileLogger.warn("desktop playback stop failed err=${error.message.orEmpty()}")
+                }
         }
 
-        runCatching { player.stop() }
-            .onFailure { error ->
-                DesktopFileLogger.warn("desktop playback stop failed err=${error.message.orEmpty()}")
-            }
+        deleteCacheFile(playback.cacheFile)
     }
 
     private fun rememberDuration(sessionId: Long, durationMs: Long?) {
@@ -276,11 +313,73 @@ internal class DesktopPlaybackController(
 
         return when {
             message.isNullOrBlank() -> "桌面播放器发生错误"
+            message.contains("HTTP 404", ignoreCase = true) -> "服务端音频文件不存在"
+            message.contains("HTTP 500", ignoreCase = true) -> "服务端音频接口异常"
+            message.contains("timed out", ignoreCase = true) -> "桌面端获取音频超时"
             message.contains("Unable to retrieve", ignoreCase = true) -> "桌面播放器无法连接音频流"
             message.contains("Connection refused", ignoreCase = true) -> "桌面播放器无法连接本地音频服务"
             message.contains("mark/reset not supported", ignoreCase = true) -> "桌面播放器无法读取当前音频流"
             else -> message
         }
+    }
+
+    private fun downloadPlaybackFile(url: String, sessionId: Long): Path {
+        val cacheDir = DesktopPaths.playbackCacheDir()
+        Files.createDirectories(cacheDir)
+
+        val targetFile = cacheDir.resolve("playback-$sessionId.mp3")
+        val tempFile = cacheDir.resolve("playback-$sessionId.download")
+        Files.deleteIfExists(tempFile)
+        Files.deleteIfExists(targetFile)
+
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = DEFAULT_CONNECT_TIMEOUT_MS
+            readTimeout = DEFAULT_READ_TIMEOUT_MS
+            instanceFollowRedirects = true
+        }
+
+        try {
+            val statusCode = connection.responseCode
+            if (statusCode !in 200..299) {
+                throw IOException("HTTP $statusCode")
+            }
+
+            tempFile.toFile().outputStream().use { output ->
+                connection.inputStream.use { input ->
+                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                    while (true) {
+                        val readCount = input.read(buffer)
+                        if (readCount <= 0) {
+                            break
+                        }
+                        output.write(buffer, 0, readCount)
+                    }
+                    output.flush()
+                }
+            }
+
+            Files.move(tempFile, targetFile, StandardCopyOption.REPLACE_EXISTING)
+            DesktopFileLogger.info("desktop playback cached file=$targetFile source=$url")
+            return targetFile
+        } catch (error: Throwable) {
+            Files.deleteIfExists(tempFile)
+            Files.deleteIfExists(targetFile)
+            throw error
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun deleteCacheFile(path: Path?) {
+        if (path == null) {
+            return
+        }
+
+        runCatching { Files.deleteIfExists(path) }
+            .onFailure { error ->
+                DesktopFileLogger.warn("desktop playback cache cleanup failed file=$path err=${error.message.orEmpty()}")
+            }
     }
 
     private fun submitControl(action: () -> Unit) {
@@ -297,7 +396,7 @@ internal class DesktopPlaybackController(
 
     private sealed interface PlaybackAction {
         data class Start(
-            val previousPlayer: BasicPlayer?,
+            val previousPlayback: DetachedPlayback,
             val player: BasicPlayer,
             val requestToken: Long,
             val sessionId: Long,
@@ -315,6 +414,11 @@ internal class DesktopPlaybackController(
         val player: BasicPlayer,
         val requestToken: Long,
         val sessionId: Long,
+    )
+
+    private data class DetachedPlayback(
+        val player: BasicPlayer?,
+        val cacheFile: Path?,
     )
 
     private inner class StreamingPlayerListener(
@@ -379,5 +483,11 @@ internal class DesktopPlaybackController(
         }
 
         override fun setController(controller: BasicController?) = Unit
+    }
+
+    private companion object {
+        const val DEFAULT_CONNECT_TIMEOUT_MS = 15000
+        const val DEFAULT_READ_TIMEOUT_MS = 60000
+        const val DOWNLOAD_BUFFER_SIZE = 256 * 1024
     }
 }

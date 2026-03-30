@@ -32,6 +32,15 @@ object DesktopPaths {
         }
     }
 
+    fun playbackCacheDir(): Path {
+        val localAppData = (System.getenv("LOCALAPPDATA") ?: "").trim()
+        return if (localAppData.isNotEmpty()) {
+            Path.of(localAppData, "YinZhao", "playback-cache")
+        } else {
+            configDir().resolve("playback-cache")
+        }
+    }
+
     fun logsDir(): Path = configDir().resolve("logs")
 
     fun desktopLogFile(): Path = logsDir().resolve("desktop.log")

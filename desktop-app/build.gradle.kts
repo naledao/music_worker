@@ -4,8 +4,8 @@ val desktopPackageName = "YinZhaoDesktop"
 val desktopDisplayName = "音爪"
 val desktopPackageVendor = "YinZhao"
 val desktopPackageDescription = "YinZhao Desktop Client"
-val desktopAppVersion = "0.2.1"
-val desktopAppVersionCode = 12L
+val desktopAppVersion = "0.2.2"
+val desktopAppVersionCode = 13L
 
 plugins {
     kotlin("jvm") version "2.2.21"
