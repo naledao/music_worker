@@ -3,9 +3,7 @@ package com.openclaw.musicworker.desktop
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.swing.SwingUtilities
 import javafx.application.Platform
-import javafx.embed.swing.JFXPanel
 import javafx.scene.media.Media
 import javafx.scene.media.MediaException
 import javafx.scene.media.MediaPlayer
@@ -159,34 +157,22 @@ internal class DesktopPlaybackController(
             if (javaFxStarted.get()) {
                 return
             }
-            val initError = arrayOfNulls<Throwable>(1)
-            val swingInit = Runnable {
-                runCatching { JFXPanel() }
-                    .onFailure { error ->
-                        initError[0] = error
-                        DesktopFileLogger.error("initialize JavaFX runtime failed", error)
-                    }
-            }
-            if (SwingUtilities.isEventDispatchThread()) {
-                swingInit.run()
-            } else {
-                runCatching { SwingUtilities.invokeAndWait(swingInit) }
-                    .onFailure { error ->
-                        initError[0] = error
-                        DesktopFileLogger.error("initialize JavaFX runtime on EDT failed", error)
-                    }
-            }
-            initError[0]?.let { error ->
-                throw IllegalStateException("JavaFX runtime 初始化失败: ${error.message.orEmpty()}", error)
-            }
-
             val fxReadyLatch = CountDownLatch(1)
+            val startupError = arrayOfNulls<Throwable>(1)
             runCatching {
-                Platform.runLater {
+                Platform.startup {
                     fxReadyLatch.countDown()
                 }
             }.onFailure { error ->
-                DesktopFileLogger.error("schedule JavaFX ready signal failed", error)
+                val message = error.message.orEmpty()
+                if (error is IllegalStateException && message.contains("Toolkit already initialized", ignoreCase = true)) {
+                    javaFxStarted.set(true)
+                    return
+                }
+                startupError[0] = error
+                DesktopFileLogger.error("initialize JavaFX runtime failed", error)
+            }
+            startupError[0]?.let { error ->
                 throw IllegalStateException("JavaFX runtime 初始化失败: ${error.message.orEmpty()}", error)
             }
             if (!fxReadyLatch.await(10, TimeUnit.SECONDS)) {
