@@ -259,7 +259,9 @@ private fun DesktopPlayerDetailPanel(
                     value = sliderValue,
                     onValueChange = onSliderValueChange,
                     onValueChangeFinished = onSliderValueChangeFinished,
-                    enabled = totalDurationMs > 0L && !playbackState.playbackUrl.isNullOrBlank(),
+                    enabled = playbackState.supportsSeeking &&
+                        totalDurationMs > 0L &&
+                        !playbackState.playbackUrl.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
 
@@ -294,6 +296,14 @@ private fun DesktopPlayerDetailPanel(
                     if (!playbackState.playbackUrl.isNullOrBlank()) {
                         PlayerMetaChip(label = "服务端串流")
                     }
+                }
+
+                if (!playbackState.playbackUrl.isNullOrBlank() && !playbackState.supportsSeeking) {
+                    Text(
+                        text = "当前桌面串流播放暂不支持拖动定位",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 playbackState.currentTask?.let { task ->

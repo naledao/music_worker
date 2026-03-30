@@ -107,6 +107,7 @@ data class DesktopPlaybackUiState(
     val currentDurationSec: Double? = null,
     val currentPositionMs: Long = 0L,
     val playbackDurationMs: Long? = null,
+    val supportsSeeking: Boolean = false,
     val currentCoverUrl: String? = null,
     val currentTask: DownloadTask? = null,
     val playbackUrl: String? = null,
@@ -130,8 +131,8 @@ data class DesktopOpsUiState(
 )
 
 data class DesktopUpdateUiState(
-    val currentVersionName: String = "0.2.0",
-    val currentVersionCode: Long = 11L,
+    val currentVersionName: String = "0.2.1",
+    val currentVersionCode: Long = 12L,
     val availableUpdate: AppUpdateInfo? = null,
     val downloadedInstallerPath: String? = null,
     val downloadedInstallerName: String? = null,

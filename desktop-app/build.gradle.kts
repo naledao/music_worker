@@ -4,14 +4,8 @@ val desktopPackageName = "YinZhaoDesktop"
 val desktopDisplayName = "音爪"
 val desktopPackageVendor = "YinZhao"
 val desktopPackageDescription = "YinZhao Desktop Client"
-val desktopAppVersion = "0.2.0"
-val desktopAppVersionCode = 11L
-val javafxVersion = "17.0.2"
-val javafxPlatform = when {
-    System.getProperty("os.name").lowercase().contains("win") -> "win"
-    System.getProperty("os.name").lowercase().contains("mac") -> "mac"
-    else -> "linux"
-}
+val desktopAppVersion = "0.2.1"
+val desktopAppVersionCode = 12L
 
 plugins {
     kotlin("jvm") version "2.2.21"
@@ -31,12 +25,10 @@ dependencies {
     implementation(compose.material3)
 
     implementation("io.ktor:ktor-client-cio:3.4.1")
+    implementation("com.googlecode.soundlibs:basicplayer:3.0.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-    implementation("org.openjfx:javafx-base:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-graphics:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-swing:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-media:$javafxVersion:$javafxPlatform")
+    runtimeOnly("org.slf4j:slf4j-nop:1.7.36")
 }
 
 compose.desktop {
