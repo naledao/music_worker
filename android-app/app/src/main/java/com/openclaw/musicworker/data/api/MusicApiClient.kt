@@ -19,6 +19,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import java.io.IOException
 import java.io.OutputStream
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -45,12 +47,66 @@ class MusicApiClient(
 
     suspend fun getCurrentProxy(): ProxyInfo = get("/api/proxy/current")
 
+    suspend fun getChartSources(): List<ChartSourceInfo> = get<ChartSourcesPayload>("/api/charts/sources").sources
+
+    suspend fun getCharts(
+        source: String = DEFAULT_CHART_SOURCE,
+        type: String = DEFAULT_CHART_TYPE,
+        period: String = DEFAULT_CHART_PERIOD,
+        region: String = DEFAULT_CHART_REGION,
+        limit: Int = DEFAULT_CHART_LIMIT,
+        forceRefresh: Boolean = false,
+    ): ChartPayload {
+        val query = buildList {
+            add("source=${encodeQueryValue(source)}")
+            add("type=${encodeQueryValue(type)}")
+            add("period=${encodeQueryValue(period)}")
+            add("region=${encodeQueryValue(region)}")
+            add("limit=${limit.coerceIn(1, MAX_CHART_LIMIT)}")
+            if (forceRefresh) {
+                add("force_refresh=1")
+            }
+        }.joinToString("&")
+        return get("/api/charts?$query")
+    }
+
     suspend fun search(keyword: String, limit: Int): SearchPayload {
         return post("/api/search", SearchRequest(keyword = keyword, limit = limit))
     }
 
     suspend fun startDownload(musicId: String): DownloadTask {
         return post("/api/download", DownloadRequest(musicId = musicId))
+    }
+
+    suspend fun startLyricsGeneration(musicId: String): DownloadTask {
+        return post("/api/lyrics/generate", LyricsGenerateRequest(musicId = musicId))
+    }
+
+    suspend fun getDownloadedSongs(
+        page: Int = 1,
+        pageSize: Int = DEFAULT_DOWNLOADS_PAGE_SIZE,
+    ): DownloadedSongsPayload {
+        val safePage = page.coerceAtLeast(1)
+        val safePageSize = pageSize.coerceIn(1, MAX_DOWNLOADS_PAGE_SIZE)
+        return get("/api/downloads?page=$safePage&page_size=$safePageSize")
+    }
+
+    suspend fun getDownloadedSongLyrics(musicId: String): DownloadedLyricsPayload? = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("${settingsStore.currentConfig().baseUrl}/api/downloads/${encodePathSegment(musicId)}/lyrics")
+            .get()
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            val rawBody = response.body?.string().orEmpty()
+            if (response.code == 404) {
+                return@withContext null
+            }
+            if (!response.isSuccessful) {
+                throw IOException(decodeErrorMessage(rawBody).ifBlank { "HTTP ${response.code}" })
+            }
+            decodePayload(rawBody)
+        }
     }
 
     suspend fun getTask(taskId: String): DownloadTask = get("/api/tasks/$taskId")
@@ -61,9 +117,15 @@ class MusicApiClient(
 
     suspend fun getAppUpdate(): AppUpdateInfo = get("/api/app/update")
 
+    fun taskFileUrl(taskId: String): String = "${settingsStore.currentConfig().baseUrl}/api/files/$taskId"
+
+    fun downloadedSongFileUrl(musicId: String): String {
+        return "${settingsStore.currentConfig().baseUrl}/api/downloads/${encodePathSegment(musicId)}/file"
+    }
+
     suspend fun downloadFile(taskId: String, outputStream: OutputStream) = withContext(Dispatchers.IO) {
         downloadBinary(
-            url = "${settingsStore.currentConfig().baseUrl}/api/files/$taskId",
+            url = taskFileUrl(taskId),
             outputStream = outputStream,
             expectedContentTypes = listOf("audio/", "application/octet-stream"),
         )
@@ -75,7 +137,20 @@ class MusicApiClient(
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ) = withContext(Dispatchers.IO) {
         downloadBinary(
-            url = "${settingsStore.currentConfig().baseUrl}/api/files/$taskId",
+            url = taskFileUrl(taskId),
+            outputStream = outputStream,
+            expectedContentTypes = listOf("audio/", "application/octet-stream"),
+            onProgress = onProgress,
+        )
+    }
+
+    suspend fun downloadDownloadedSong(
+        musicId: String,
+        outputStream: OutputStream,
+        onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        downloadBinary(
+            url = downloadedSongFileUrl(musicId),
             outputStream = outputStream,
             expectedContentTypes = listOf("audio/", "application/octet-stream"),
             onProgress = onProgress,
@@ -151,6 +226,8 @@ class MusicApiClient(
             responseBody.byteStream().use { input ->
                 val buffer = ByteArray(DEFAULT_DOWNLOAD_BUFFER_SIZE)
                 var downloadedBytes = 0L
+                var lastReportedBytes = 0L
+                var lastReportedAtMs = System.currentTimeMillis()
                 onProgress?.invoke(downloadedBytes, totalBytes)
                 while (true) {
                     val readCount = input.read(buffer)
@@ -159,6 +236,18 @@ class MusicApiClient(
                     }
                     outputStream.write(buffer, 0, readCount)
                     downloadedBytes += readCount
+                    val nowMs = System.currentTimeMillis()
+                    val shouldReportProgress =
+                        downloadedBytes == totalBytes ||
+                        (downloadedBytes - lastReportedBytes) >= PROGRESS_CALLBACK_BYTE_STEP ||
+                        (nowMs - lastReportedAtMs) >= PROGRESS_CALLBACK_INTERVAL_MS
+                    if (shouldReportProgress) {
+                        onProgress?.invoke(downloadedBytes, totalBytes)
+                        lastReportedBytes = downloadedBytes
+                        lastReportedAtMs = nowMs
+                    }
+                }
+                if (downloadedBytes != lastReportedBytes) {
                     onProgress?.invoke(downloadedBytes, totalBytes)
                 }
                 outputStream.flush()
@@ -180,8 +269,26 @@ class MusicApiClient(
         }
     }
 
+    private fun encodeQueryValue(value: String): String {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+    }
+
+    private fun encodePathSegment(value: String): String {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.toString()).replace("+", "%20")
+    }
+
     private companion object {
         const val DEFAULT_DOWNLOAD_BUFFER_SIZE = 64 * 1024
+        const val DEFAULT_CHART_SOURCE = "apple_music"
+        const val DEFAULT_CHART_TYPE = "songs"
+        const val DEFAULT_CHART_PERIOD = "daily"
+        const val DEFAULT_CHART_REGION = "us"
+        const val DEFAULT_CHART_LIMIT = 50
+        const val MAX_CHART_LIMIT = 100
+        const val DEFAULT_DOWNLOADS_PAGE_SIZE = 10
+        const val MAX_DOWNLOADS_PAGE_SIZE = 100
+        const val PROGRESS_CALLBACK_INTERVAL_MS = 250L
+        const val PROGRESS_CALLBACK_BYTE_STEP = 256 * 1024L
     }
 
     suspend fun selectProxy(name: String): ProxyInfo {

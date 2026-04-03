@@ -101,6 +101,52 @@ data class SearchPayload(
 )
 
 @Serializable
+data class ChartRegionInfo(
+    val id: String,
+    val label: String,
+)
+
+@Serializable
+data class ChartSourceInfo(
+    val id: String,
+    val label: String,
+    val types: List<String> = emptyList(),
+    val periods: List<String> = emptyList(),
+    val regions: List<ChartRegionInfo> = emptyList(),
+)
+
+@Serializable
+data class ChartSourcesPayload(
+    val sources: List<ChartSourceInfo> = emptyList(),
+)
+
+@Serializable
+data class ChartItem(
+    val rank: Int,
+    val title: String,
+    val artist: String,
+    val cover: String? = null,
+    val album: String? = null,
+    val durationSec: Double? = null,
+    val deeplink: String? = null,
+    val searchKeyword: String,
+    val sourceId: String? = null,
+    val releaseDate: String? = null,
+)
+
+@Serializable
+data class ChartPayload(
+    val source: String,
+    val type: String,
+    val period: String,
+    val region: String,
+    val title: String,
+    val updatedAt: String? = null,
+    val fromCache: Boolean = false,
+    val items: List<ChartItem> = emptyList(),
+)
+
+@Serializable
 data class SearchRequest(
     val keyword: String,
     val limit: Int = 20,
@@ -108,6 +154,11 @@ data class SearchRequest(
 
 @Serializable
 data class DownloadRequest(
+    val musicId: String,
+)
+
+@Serializable
+data class LyricsGenerateRequest(
     val musicId: String,
 )
 
@@ -136,6 +187,7 @@ data class DownloadTask(
     val speedBps: Double? = null,
     val etaSec: Int? = null,
     val strategy: String? = null,
+    val lyricsPath: String? = null,
     val errorMessage: String? = null,
     val errorClass: String? = null,
 )
@@ -148,6 +200,37 @@ data class TaskListPayload(
 @Serializable
 data class LogLinesPayload(
     val lines: List<String>,
+)
+
+@Serializable
+data class DownloadedSongItem(
+    val musicId: String,
+    val filePath: String,
+    val filename: String? = null,
+    val displayTitle: String? = null,
+    val fileSize: Long? = null,
+    val durationSec: Double? = null,
+    val downloadedAt: String? = null,
+    val updatedAt: String? = null,
+    val lyricsPath: String? = null,
+    val lyricsExists: Boolean = false,
+    val lyricsUpdatedAt: String? = null,
+)
+
+@Serializable
+data class DownloadedSongsPayload(
+    val items: List<DownloadedSongItem> = emptyList(),
+    val total: Int = 0,
+    val currentPage: Int = 1,
+    val pageSize: Int = 20,
+    val totalPages: Int = 0,
+)
+
+@Serializable
+data class DownloadedLyricsPayload(
+    val musicId: String,
+    val content: String,
+    val updatedAt: String? = null,
 )
 
 @Serializable

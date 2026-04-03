@@ -143,10 +143,25 @@ MIHOMO_SECRET = (
     or ""
 ).strip()
 MIHOMO_SELECTOR_NAME = (os.environ.get("MUSIC_MIHOMO_SELECTOR_NAME") or "赔钱机场").strip()
+PROXY_FALLBACK_NODES = parse_csv_env(
+    "MUSIC_PROXY_FALLBACK_NODES",
+    [
+        "🇯🇵日本东京06 | 高速专线推荐",
+        "🇭🇰香港01 | 移动联通推荐",
+        "🇺🇸美国圣何塞01 | 三网推荐",
+        "🇸🇬AWS新加坡01 | 移动联通推荐",
+    ],
+)
+PROXY_FALLBACK_NODES_FILE = (
+    os.environ.get("MUSIC_PROXY_FALLBACK_NODES_FILE")
+    or os.path.join(STATE_DIR, "proxy_fallback_nodes.json")
+).strip()
 
 LOCAL_API_HOST = os.environ.get("MUSIC_LOCAL_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
 LOCAL_API_PORT = parse_int_env("MUSIC_LOCAL_API_PORT", 18081)
 LOCAL_API_MAX_WORKERS = parse_int_env("MUSIC_LOCAL_API_MAX_WORKERS", 2)
+MAX_DOWNLOAD_FILE_SIZE_MB = max(1, parse_int_env("MUSIC_MAX_DOWNLOAD_FILE_SIZE_MB", 30))
+MAX_DOWNLOAD_FILE_SIZE_BYTES = MAX_DOWNLOAD_FILE_SIZE_MB * 1024 * 1024
 DOWNLOAD_INDEX_DB = (
     os.environ.get("MUSIC_DOWNLOAD_INDEX_DB")
     or os.path.join(STATE_DIR, "downloaded_music.sqlite3")
@@ -155,3 +170,23 @@ PROXY_AUTH_DB = (
     os.environ.get("MUSIC_PROXY_AUTH_DB")
     or DOWNLOAD_INDEX_DB
 ).strip()
+
+ANDROID_ADB_SERIAL = (os.environ.get("MUSIC_ANDROID_ADB_SERIAL") or "127.0.0.1:5555").strip()
+LYRICS_ADB_BIN = (os.environ.get("MUSIC_LYRICS_ADB_BIN") or "adb").strip()
+LYRICS_DEVICE_WHISPER_BIN = (
+    os.environ.get("MUSIC_LYRICS_DEVICE_WHISPER_BIN")
+    or "/data/adb/openclaw-whisper/bin/whisper-cli"
+).strip()
+LYRICS_DEVICE_MODEL_PATH = (
+    os.environ.get("MUSIC_LYRICS_DEVICE_MODEL_PATH")
+    or "/sdcard/Download/openclaw-whisper/ggml-base.bin"
+).strip()
+LYRICS_DEVICE_WORK_DIR = (
+    os.environ.get("MUSIC_LYRICS_DEVICE_WORK_DIR")
+    or "/sdcard/Download/openclaw-whisper"
+).strip()
+LYRICS_DEVICE_INPUT_DIR = os.path.join(LYRICS_DEVICE_WORK_DIR, "input")
+LYRICS_DEVICE_OUTPUT_DIR = os.path.join(LYRICS_DEVICE_WORK_DIR, "output")
+LYRICS_THREADS = max(1, parse_int_env("MUSIC_LYRICS_THREADS", 4))
+LYRICS_TIMEOUT_SEC = max(60, parse_int_env("MUSIC_LYRICS_TIMEOUT_SEC", 3600))
+LYRICS_GPU_CHUNK_MS = max(15_000, parse_int_env("MUSIC_LYRICS_GPU_CHUNK_MS", 60_000))

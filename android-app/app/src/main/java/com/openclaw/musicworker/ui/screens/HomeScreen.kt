@@ -15,13 +15,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.openclaw.musicworker.data.settings.ApiServerConfig
-import com.openclaw.musicworker.ui.DownloadUiState
 import com.openclaw.musicworker.ui.HomeUiState
 
 @Composable
 fun HomeScreen(
     state: HomeUiState,
-    downloadState: DownloadUiState,
     serverConfig: ApiServerConfig,
     onRefresh: () -> Unit,
 ) {
@@ -79,24 +77,6 @@ fun HomeScreen(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
-                }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(text = "最近下载", style = MaterialTheme.typography.titleMedium)
-                if (downloadState.currentTask == null) {
-                    Text(text = "还没有发起新的下载任务。")
-                } else {
-                    Text(text = downloadState.selectedTitle ?: downloadState.currentTask.musicId)
-                    Text(text = "状态：${downloadState.currentTask.status} / ${downloadState.currentTask.stage}")
-                    Text(text = "进度：${downloadState.currentTask.progress}%")
-                    downloadState.currentTask.filename?.let { Text(text = "文件：$it") }
-                    downloadState.currentTask.errorMessage?.let { Text(text = "错误：$it") }
                 }
             }
         }

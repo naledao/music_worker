@@ -18,15 +18,27 @@ from music_config import (
     LOCAL_API_MAX_WORKERS,
     LOCAL_API_PORT,
     MIHOMO_CONTROLLER_URL,
+    PROXY_FALLBACK_NODES,
+    PROXY_FALLBACK_NODES_FILE,
     MIHOMO_SECRET,
     MIHOMO_SELECTOR_NAME,
     DOWNLOAD_INDEX_DB,
     PROXY_AUTH_DB,
     YTDLP_PROXY,
 )
+from music_charts import ChartFetchError, ChartsService
 from music_download_store import DownloadedMusicStore
+from music_lyrics import generate_lrc_for_audio
 from music_proxy_auth_store import ProxyAuthStore
-from music_core import get_runtime_snapshot, log_startup_summary, logger, ytdlp_download_mp3, ytdlp_search
+from music_core import (
+    DownloadTooLargeError,
+    ensure_download_file_size_allowed,
+    get_runtime_snapshot,
+    log_startup_summary,
+    logger,
+    ytdlp_download_mp3,
+    ytdlp_search,
+)
 
 
 def now_ts() -> float:
@@ -60,6 +72,7 @@ ALLOWED_COVER_HOST_SUFFIXES = (
     "ytimg.com",
     "ggpht.com",
     "googleusercontent.com",
+    "mzstatic.com",
 )
 
 
@@ -147,6 +160,134 @@ def select_proxy(name: str) -> dict[str, Any]:
         {"name": name},
     )
     return get_current_proxy()
+
+
+def normalize_proxy_node_names(raw_names: Any) -> list[str]:
+    if isinstance(raw_names, str):
+        raw_items = [raw_names]
+    elif isinstance(raw_names, (list, tuple)):
+        raw_items = list(raw_names)
+    else:
+        raw_items = []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        name = str(raw_item or "").strip()
+        if not name or name in seen:
+            continue
+        normalized.append(name)
+        seen.add(name)
+    return normalized
+
+
+def write_json_atomic(file_path: str, payload: dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    tmp_path = f"{file_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, file_path)
+
+
+def save_proxy_fallback_nodes(nodes: list[str], enabled: bool = True) -> dict[str, Any]:
+    payload = {
+        "selector": MIHOMO_SELECTOR_NAME,
+        "enabled": bool(enabled),
+        "nodes": normalize_proxy_node_names(nodes),
+        "updatedAt": iso_ts(),
+    }
+    write_json_atomic(PROXY_FALLBACK_NODES_FILE, payload)
+    return payload
+
+
+def load_proxy_fallback_nodes() -> dict[str, Any]:
+    payload: dict[str, Any] | None = None
+    nodes: list[str] = []
+    enabled = True
+
+    if os.path.exists(PROXY_FALLBACK_NODES_FILE):
+        try:
+            with open(PROXY_FALLBACK_NODES_FILE, "r", encoding="utf-8") as f:
+                raw_payload = json.load(f)
+            if isinstance(raw_payload, dict):
+                payload = raw_payload
+                enabled = bool(raw_payload.get("enabled", True))
+                nodes = normalize_proxy_node_names(raw_payload.get("nodes"))
+            elif isinstance(raw_payload, list):
+                nodes = normalize_proxy_node_names(raw_payload)
+        except Exception as e:
+            logger.warning("load proxy fallback nodes failed path=%s err=%s", PROXY_FALLBACK_NODES_FILE, e)
+
+    if not nodes and payload is None:
+        payload = save_proxy_fallback_nodes(normalize_proxy_node_names(PROXY_FALLBACK_NODES))
+        nodes = normalize_proxy_node_names(payload.get("nodes"))
+        enabled = bool(payload.get("enabled", True))
+    elif not isinstance(payload, dict):
+        payload = save_proxy_fallback_nodes(nodes, enabled=enabled)
+    elif "enabled" not in payload:
+        payload = save_proxy_fallback_nodes(nodes, enabled=enabled)
+
+    return {
+        "selector": MIHOMO_SELECTOR_NAME,
+        "filePath": PROXY_FALLBACK_NODES_FILE,
+        "enabled": enabled,
+        "nodes": nodes,
+        "updatedAt": payload.get("updatedAt") if isinstance(payload, dict) else None,
+    }
+
+
+def build_proxy_retry_order(
+    current_name: str | None,
+    fallback_nodes: list[str],
+    available_options: list[str] | None = None,
+) -> list[str]:
+    current_name = str(current_name or "").strip() or None
+    available_names = normalize_proxy_node_names(available_options or [])
+    available_set = set(available_names)
+    fallback_names = normalize_proxy_node_names(fallback_nodes)
+    if available_set:
+        fallback_names = [name for name in fallback_names if name in available_set]
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add_candidate(name: str | None) -> None:
+        candidate = str(name or "").strip()
+        if not candidate:
+            return
+        if available_set and candidate not in available_set:
+            return
+        if candidate in seen:
+            return
+        ordered.append(candidate)
+        seen.add(candidate)
+
+    add_candidate(current_name)
+    if current_name and current_name in fallback_names:
+        pivot = fallback_names.index(current_name)
+        rotation = fallback_names[pivot + 1:] + fallback_names[:pivot]
+    else:
+        rotation = fallback_names
+
+    for name in rotation:
+        add_candidate(name)
+    return ordered
+
+
+def get_proxy_status_payload() -> dict[str, Any]:
+    current_proxy = get_current_proxy()
+    fallback_state = load_proxy_fallback_nodes()
+    fallback_nodes = normalize_proxy_node_names(fallback_state.get("nodes"))
+    available_set = set(normalize_proxy_node_names(current_proxy.get("options") or []))
+    current_proxy["fallbackEnabled"] = bool(fallback_state.get("enabled", True))
+    current_proxy["fallbackNodes"] = fallback_nodes
+    current_proxy["fallbackNodeFile"] = fallback_state.get("filePath")
+    current_proxy["missingFallbackNodes"] = [
+        node_name for node_name in fallback_nodes
+        if available_set and node_name not in available_set
+    ]
+    return current_proxy
 
 
 def get_android_apk_path(build_type: str) -> str:
@@ -461,8 +602,11 @@ class TaskManager:
     def __init__(self, max_workers: int):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._proxy_download_lock = threading.Lock()
         self._active_download_tasks_by_music_id: dict[str, str] = {}
+        self._active_lyrics_tasks_by_music_id: dict[str, str] = {}
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="music-local-api")
+        self._lyrics_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="music-lyrics-api")
 
     @staticmethod
     def _is_task_active(task: dict[str, Any] | None) -> bool:
@@ -476,6 +620,13 @@ class TaskManager:
             return
         if task_id is None or active_task_id == task_id:
             self._active_download_tasks_by_music_id.pop(music_id, None)
+
+    def _pop_active_lyrics_task_locked(self, music_id: str, task_id: str | None = None) -> None:
+        active_task_id = self._active_lyrics_tasks_by_music_id.get(music_id)
+        if active_task_id is None:
+            return
+        if task_id is None or active_task_id == task_id:
+            self._active_lyrics_tasks_by_music_id.pop(music_id, None)
 
     def _get_reusable_task_locked(self, music_id: str) -> dict[str, Any] | None:
         active_task_id = self._active_download_tasks_by_music_id.get(music_id)
@@ -497,6 +648,25 @@ class TaskManager:
                 return self._copy_task(task)
         return None
 
+    def _get_reusable_lyrics_task_locked(self, music_id: str) -> dict[str, Any] | None:
+        active_task_id = self._active_lyrics_tasks_by_music_id.get(music_id)
+        if not active_task_id:
+            return None
+
+        task = self._tasks.get(active_task_id)
+        if not task:
+            self._active_lyrics_tasks_by_music_id.pop(music_id, None)
+            return None
+
+        if self._is_task_active(task):
+            return self._copy_task(task)
+
+        self._active_lyrics_tasks_by_music_id.pop(music_id, None)
+        lyrics_path = os.path.abspath((task.get("lyricsPath") or "").strip())
+        if task.get("status") == "finished" and lyrics_path and os.path.exists(lyrics_path):
+            return self._copy_task(task)
+        return None
+
     def _touch(self, task: dict[str, Any]) -> None:
         task["updatedAt"] = iso_ts()
 
@@ -511,6 +681,10 @@ class TaskManager:
         with self._lock:
             reusable_task = self._get_reusable_task_locked(music_id)
             if reusable_task is not None:
+                if reusable_task.get("status") == "finished":
+                    file_path = os.path.abspath((reusable_task.get("filePath") or "").strip())
+                    if file_path and os.path.exists(file_path):
+                        ensure_download_file_size_allowed(os.path.getsize(file_path), estimated=False)
                 logger.info(
                     f"local api reuse active download taskId={reusable_task.get('taskId')} musicId={music_id} "
                     f"status={reusable_task.get('status')}"
@@ -518,6 +692,8 @@ class TaskManager:
                 return reusable_task
 
             existing_download = DOWNLOADED_MUSIC_STORE.get_download(music_id)
+            if existing_download:
+                ensure_download_file_size_allowed(existing_download.get("fileSize"), estimated=False)
             task_id = str(uuid.uuid4())
             task = {
                 "taskId": task_id,
@@ -569,6 +745,71 @@ class TaskManager:
             raise
         return self.get_task(task_id) or task
 
+    def create_lyrics_task(self, music_id: str) -> dict[str, Any]:
+        music_id = (music_id or "").strip()
+        if not music_id:
+            raise ValueError("musicId is empty")
+
+        with self._lock:
+            reusable_task = self._get_reusable_lyrics_task_locked(music_id)
+            if reusable_task is not None:
+                logger.info(
+                    "local api reuse active lyrics taskId=%s musicId=%s status=%s",
+                    reusable_task.get("taskId"),
+                    music_id,
+                    reusable_task.get("status"),
+                )
+                return reusable_task
+
+            existing_download = DOWNLOADED_MUSIC_STORE.get_download(music_id)
+            if not existing_download:
+                raise FileNotFoundError(f"downloaded song not found: {music_id}")
+
+            task_id = str(uuid.uuid4())
+            task = {
+                "taskId": task_id,
+                "type": "lyrics",
+                "musicId": music_id,
+                "status": "queued",
+                "stage": "queued",
+                "progress": 0,
+                "createdAt": iso_ts(),
+                "updatedAt": iso_ts(),
+                "filename": existing_download.get("filename"),
+                "filePath": existing_download.get("filePath"),
+                "fileSize": existing_download.get("fileSize"),
+                "lyricsPath": existing_download.get("lyricsPath"),
+                "downloadedBytes": 0,
+                "totalBytes": existing_download.get("fileSize"),
+                "speedBps": None,
+                "etaSec": None,
+                "strategy": "whisper.cpp-vulkan",
+                "errorMessage": None,
+                "errorClass": None,
+            }
+            self._tasks[task_id] = task
+
+            if existing_download.get("lyricsExists"):
+                task.update(
+                    status="finished",
+                    stage="finished",
+                    progress=100,
+                    lyricsPath=existing_download.get("lyricsPath"),
+                )
+                self._touch(task)
+                return self._copy_task(task)
+
+            self._active_lyrics_tasks_by_music_id[music_id] = task_id
+
+        try:
+            self._lyrics_executor.submit(self._run_lyrics_generation, task_id, music_id)
+        except Exception:
+            with self._lock:
+                self._tasks.pop(task_id, None)
+                self._pop_active_lyrics_task_locked(music_id, task_id)
+            raise
+        return self.get_task(task_id) or task
+
     def update_task(self, task_id: str, **fields: Any) -> None:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -577,7 +818,12 @@ class TaskManager:
             task.update(fields)
             self._touch(task)
             if not self._is_task_active(task):
-                self._pop_active_download_task_locked(str(task.get("musicId") or "").strip(), task_id)
+                music_id = str(task.get("musicId") or "").strip()
+                task_type = str(task.get("type") or "download").strip()
+                if task_type == "lyrics":
+                    self._pop_active_lyrics_task_locked(music_id, task_id)
+                else:
+                    self._pop_active_download_task_locked(music_id, task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -600,6 +846,151 @@ class TaskManager:
             "finished": sum(1 for task in tasks if task["status"] == "finished"),
             "failed": sum(1 for task in tasks if task["status"] == "failed"),
         }
+
+    def _download_with_proxy_fallback(
+        self,
+        task_id: str,
+        music_id: str,
+        status_callback: Any,
+    ) -> str:
+        current_proxy = get_current_proxy()
+        current_proxy_name = str(current_proxy.get("name") or "").strip()
+        available_options = normalize_proxy_node_names(current_proxy.get("options") or [])
+        fallback_state = load_proxy_fallback_nodes()
+        fallback_enabled = bool(fallback_state.get("enabled", True))
+        fallback_nodes = normalize_proxy_node_names(fallback_state.get("nodes"))
+        retry_order = build_proxy_retry_order(
+            current_proxy_name,
+            fallback_nodes if fallback_enabled else [],
+            available_options,
+        )
+        if not retry_order:
+            raise RuntimeError("no available proxy nodes configured for download fallback")
+
+        missing_nodes = [node_name for node_name in fallback_nodes if node_name not in set(available_options)]
+        if missing_nodes:
+            logger.warning(
+                "proxy fallback nodes missing from current selector selector=%s missing=%s",
+                MIHOMO_SELECTOR_NAME,
+                " | ".join(missing_nodes),
+            )
+
+        logger.info(
+            "local api proxy download order taskId=%s musicId=%s current=%s enabled=%s order=%s",
+            task_id,
+            music_id,
+            current_proxy_name or "<none>",
+            fallback_enabled,
+            " -> ".join(retry_order),
+        )
+        self.update_task(
+            task_id,
+            proxyName=current_proxy_name or retry_order[0],
+            proxyCandidates=retry_order,
+            proxyAttempt=0,
+            proxyTotal=len(retry_order),
+            fallbackEnabled=fallback_enabled,
+        )
+
+        active_proxy_name = current_proxy_name
+        last_error: Exception | None = None
+        total_attempts = len(retry_order)
+        for index, proxy_name in enumerate(retry_order, start=1):
+            if active_proxy_name != proxy_name:
+                self.update_task(
+                    task_id,
+                    stage="switching_proxy",
+                    progress=max(2, (self.get_task(task_id) or {}).get("progress") or 0),
+                    proxyName=proxy_name,
+                    proxyAttempt=index,
+                    proxyTotal=total_attempts,
+                )
+                try:
+                    selected_proxy = select_proxy(proxy_name)
+                except Exception as e:
+                    last_error = RuntimeError(f"switch proxy failed name={proxy_name} err={e}")
+                    logger.warning(
+                        "local api proxy switch failed taskId=%s musicId=%s proxy=%s err=%s",
+                        task_id,
+                        music_id,
+                        proxy_name,
+                        e,
+                    )
+                    self.update_task(
+                        task_id,
+                        stage="proxy_switch_failed",
+                        errorMessage=str(last_error),
+                        errorClass="proxy_switch",
+                        proxyName=proxy_name,
+                        proxyAttempt=index,
+                        proxyTotal=total_attempts,
+                    )
+                    continue
+
+                active_proxy_name = str(selected_proxy.get("name") or proxy_name).strip() or proxy_name
+                if active_proxy_name != proxy_name:
+                    last_error = RuntimeError(
+                        f"switch proxy mismatch target={proxy_name} actual={active_proxy_name}"
+                    )
+                    logger.warning(
+                        "local api proxy switch mismatch taskId=%s musicId=%s target=%s actual=%s",
+                        task_id,
+                        music_id,
+                        proxy_name,
+                        active_proxy_name,
+                    )
+                    self.update_task(
+                        task_id,
+                        stage="proxy_switch_failed",
+                        errorMessage=str(last_error),
+                        errorClass="proxy_switch",
+                        proxyName=proxy_name,
+                        proxyAttempt=index,
+                        proxyTotal=total_attempts,
+                    )
+                    continue
+
+            self.update_task(
+                task_id,
+                proxyName=proxy_name,
+                proxyAttempt=index,
+                proxyTotal=total_attempts,
+            )
+            logger.info(
+                "local api download node attempt taskId=%s musicId=%s proxy=%s attempt=%s/%s",
+                task_id,
+                music_id,
+                proxy_name,
+                index,
+                total_attempts,
+            )
+
+            try:
+                return ytdlp_download_mp3(music_id, status_callback=status_callback)
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "local api download failed on proxy taskId=%s musicId=%s proxy=%s attempt=%s/%s err=%s",
+                    task_id,
+                    music_id,
+                    proxy_name,
+                    index,
+                    total_attempts,
+                    e,
+                )
+                if index < total_attempts:
+                    self.update_task(
+                        task_id,
+                        stage="proxy_retrying",
+                        progress=max(5, (self.get_task(task_id) or {}).get("progress") or 0),
+                        proxyName=proxy_name,
+                        proxyAttempt=index,
+                        proxyTotal=total_attempts,
+                    )
+
+        raise RuntimeError(
+            f"all proxy fallback nodes failed musicId={music_id} lastProxy={active_proxy_name or '<none>'} err={last_error}"
+        )
 
     def _run_download(self, task_id: str, music_id: str) -> None:
         self.update_task(task_id, status="running", stage="starting", progress=1)
@@ -662,7 +1053,15 @@ class TaskManager:
                 return
 
         try:
-            path = ytdlp_download_mp3(music_id, status_callback=on_status)
+            if not self._proxy_download_lock.acquire(blocking=False):
+                self.update_task(task_id, stage="waiting_proxy_slot", progress=1)
+                self._proxy_download_lock.acquire()
+
+            try:
+                path = self._download_with_proxy_fallback(task_id, music_id, on_status)
+            finally:
+                self._proxy_download_lock.release()
+
             file_size = os.path.getsize(path)
             recorded_download = DOWNLOADED_MUSIC_STORE.record_download(
                 music_id=music_id,
@@ -689,12 +1088,80 @@ class TaskManager:
                 stage="failed",
                 progress=100,
                 errorMessage=str(e),
+                errorClass=type(e).__name__,
+            )
+
+    def _run_lyrics_generation(self, task_id: str, music_id: str) -> None:
+        self.update_task(task_id, status="running", stage="queued", progress=1)
+        existing_download = DOWNLOADED_MUSIC_STORE.get_download(music_id)
+        if not existing_download:
+            self.update_task(
+                task_id,
+                status="failed",
+                stage="failed",
+                progress=100,
+                errorMessage=f"downloaded song not found: {music_id}",
+                errorClass="FileNotFoundError",
+            )
+            return
+
+        self.update_task(
+            task_id,
+            filename=existing_download.get("filename"),
+            filePath=existing_download.get("filePath"),
+            fileSize=existing_download.get("fileSize"),
+            totalBytes=existing_download.get("fileSize"),
+        )
+
+        def on_status(event: dict[str, Any]) -> None:
+            progress = event.get("progress")
+            update_fields: dict[str, Any] = {
+                "stage": event.get("stage") or "running",
+            }
+            if progress is not None:
+                update_fields["progress"] = int(progress)
+            local_lrc_path = (event.get("localLrcPath") or "").strip()
+            if local_lrc_path:
+                update_fields["lyricsPath"] = local_lrc_path
+            self.update_task(task_id, **update_fields)
+
+        try:
+            lrc_path = generate_lrc_for_audio(
+                music_id=music_id,
+                audio_file_path=existing_download.get("filePath") or "",
+                status_callback=on_status,
+            )
+            recorded_download = DOWNLOADED_MUSIC_STORE.record_lyrics(
+                music_id=music_id,
+                lyrics_path=lrc_path,
+                lyrics_updated_at=iso_ts(),
+            ) or {}
+            self.update_task(
+                task_id,
+                status="finished",
+                stage="finished",
+                progress=100,
+                lyricsPath=recorded_download.get("lyricsPath") or lrc_path,
+                errorMessage=None,
+                errorClass=None,
+            )
+        except Exception as e:
+            logger.error("local api lyrics failed taskId=%s musicId=%s err=%s", task_id, music_id, e)
+            logger.error(traceback.format_exc())
+            self.update_task(
+                task_id,
+                status="failed",
+                stage="failed",
+                progress=100,
+                errorMessage=str(e),
+                errorClass=type(e).__name__,
             )
 
 
 DOWNLOADED_MUSIC_STORE = DownloadedMusicStore(DOWNLOAD_INDEX_DB)
 PROXY_AUTH_STORE = ProxyAuthStore(PROXY_AUTH_DB)
 TASK_MANAGER = TaskManager(max_workers=LOCAL_API_MAX_WORKERS)
+CHARTS_SERVICE = ChartsService()
 
 
 class MusicLocalApiHandler(BaseHTTPRequestHandler):
@@ -722,17 +1189,56 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
 
     def _send_file(self, file_path: str, download_name: str, content_type: str = "application/octet-stream") -> None:
         file_size = os.path.getsize(file_path)
-        self.send_response(200)
+        range_header = (self.headers.get("Range") or "").strip()
+        start = 0
+        end = file_size - 1
+        status_code = 200
+
+        if range_header.startswith("bytes="):
+            try:
+                range_value = range_header[6:].split(",", 1)[0].strip()
+                start_raw, _, end_raw = range_value.partition("-")
+                if start_raw:
+                    start = int(start_raw)
+                    end = int(end_raw) if end_raw else file_size - 1
+                else:
+                    suffix_length = int(end_raw)
+                    if suffix_length <= 0:
+                        raise ValueError("invalid suffix range")
+                    start = max(0, file_size - suffix_length)
+                    end = file_size - 1
+
+                if start < 0 or end < start or start >= file_size:
+                    raise ValueError("range out of bounds")
+
+                end = min(end, file_size - 1)
+                status_code = 206
+            except Exception:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+
+        content_length = end - start + 1
+        self.send_response(status_code)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(file_size))
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Disposition", build_content_disposition(download_name))
+        if status_code == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.end_headers()
+
         with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(256 * 1024)
+            f.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = f.read(min(256 * 1024, remaining))
                 if not chunk:
                     break
                 self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -800,13 +1306,50 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                         },
                         "runtime": get_runtime_snapshot(),
                         "tasks": TASK_MANAGER.stats(),
-                        "proxy": get_current_proxy(),
+                        "proxy": get_proxy_status_payload(),
                     }
                 )
                 return
 
             if path == "/api/proxy/current":
-                self._ok(get_current_proxy())
+                self._ok(get_proxy_status_payload())
+                return
+
+            if path == "/api/charts/sources":
+                self._ok(CHARTS_SERVICE.get_sources_payload())
+                return
+
+            if path == "/api/charts":
+                source = ((query.get("source") or ["apple_music"])[0] or "").strip()
+                chart_type = ((query.get("type") or ["songs"])[0] or "").strip()
+                period = ((query.get("period") or ["daily"])[0] or "").strip()
+                region = ((query.get("region") or ["us"])[0] or "").strip()
+                force_refresh_raw = ((query.get("force_refresh") or ["0"])[0] or "").strip().lower()
+                force_refresh = force_refresh_raw in {"1", "true", "yes", "on"}
+                try:
+                    limit = int(((query.get("limit") or ["50"])[0] or "50").strip())
+                except Exception:
+                    limit = 50
+                try:
+                    payload = CHARTS_SERVICE.get_chart_payload(
+                        source=source,
+                        chart_type=chart_type,
+                        period=period,
+                        region=region,
+                        limit=limit,
+                        force_refresh=force_refresh,
+                    )
+                except ValueError as e:
+                    self._error(400, str(e))
+                    return
+                except ChartFetchError as e:
+                    self._error(502, str(e))
+                    return
+
+                for item in payload.get("items") or []:
+                    if isinstance(item, dict):
+                        item["cover"] = self._build_cover_proxy_url(str(item.get("cover") or "").strip() or None)
+                self._ok(payload)
                 return
 
             if path == "/api/app/update":
@@ -863,6 +1406,99 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 self._ok(task)
                 return
 
+            if path == "/api/downloads":
+                try:
+                    page = int(((query.get("page") or ["1"])[0] or "1").strip())
+                except Exception:
+                    page = 1
+                try:
+                    page_size = int(
+                        (
+                            (query.get("page_size") or query.get("pageSize") or query.get("limit") or ["20"])[0]
+                            or "20"
+                        ).strip()
+                    )
+                except Exception:
+                    page_size = 20
+                page = max(1, page)
+                page_size = max(1, min(1000, page_size))
+                total_items = DOWNLOADED_MUSIC_STORE.count_downloads()
+                total_pages = max(1, (total_items + page_size - 1) // page_size) if total_items > 0 else 0
+                current_page = min(page, total_pages) if total_pages > 0 else 1
+                offset = (current_page - 1) * page_size
+                items = DOWNLOADED_MUSIC_STORE.list_downloads(limit=page_size, offset=offset)
+                if total_items > 0 and not items and current_page > 1:
+                    total_items = DOWNLOADED_MUSIC_STORE.count_downloads()
+                    total_pages = max(1, (total_items + page_size - 1) // page_size) if total_items > 0 else 0
+                    current_page = min(current_page, total_pages) if total_pages > 0 else 1
+                    offset = (current_page - 1) * page_size
+                    items = DOWNLOADED_MUSIC_STORE.list_downloads(limit=page_size, offset=offset)
+                self._ok(
+                    {
+                        "items": items,
+                        "total": total_items,
+                        "currentPage": current_page,
+                        "pageSize": page_size,
+                        "totalPages": total_pages,
+                    }
+                )
+                return
+
+            if path.startswith("/api/downloads/") and path.endswith("/file"):
+                raw_music_id = path[len("/api/downloads/"):-len("/file")]
+                music_id = urllib.parse.unquote(raw_music_id).strip().strip("/")
+                if not music_id:
+                    self._error(400, "musicId is empty")
+                    return
+                download_item = DOWNLOADED_MUSIC_STORE.get_download(music_id)
+                if not download_item:
+                    self._error(404, f"downloaded song not found: {music_id}")
+                    return
+                file_path = download_item.get("filePath")
+                if not file_path or not os.path.exists(file_path):
+                    self._error(404, "file not found")
+                    return
+                try:
+                    ensure_download_file_size_allowed(os.path.getsize(file_path), estimated=False)
+                except DownloadTooLargeError as e:
+                    self._error(400, str(e))
+                    return
+                self._send_file(
+                    file_path,
+                    download_item.get("filename") or os.path.basename(file_path),
+                    content_type="audio/mpeg",
+                )
+                return
+
+            if path.startswith("/api/downloads/") and path.endswith("/lyrics"):
+                raw_music_id = path[len("/api/downloads/"):-len("/lyrics")]
+                music_id = urllib.parse.unquote(raw_music_id).strip().strip("/")
+                if not music_id:
+                    self._error(400, "musicId is empty")
+                    return
+                download_item = DOWNLOADED_MUSIC_STORE.get_download(music_id)
+                if not download_item:
+                    self._error(404, f"downloaded song not found: {music_id}")
+                    return
+                lyrics_path = os.path.abspath((download_item.get("lyricsPath") or "").strip())
+                if not lyrics_path or not os.path.exists(lyrics_path):
+                    self._error(404, f"lyrics not found: {music_id}")
+                    return
+                try:
+                    with open(lyrics_path, "r", encoding="utf-8") as lyrics_file:
+                        lyrics_content = lyrics_file.read()
+                except Exception as e:
+                    self._error(500, f"failed to read lyrics: {e}")
+                    return
+                self._ok(
+                    {
+                        "musicId": music_id,
+                        "content": lyrics_content,
+                        "updatedAt": download_item.get("lyricsUpdatedAt"),
+                    }
+                )
+                return
+
             if path.startswith("/api/files/"):
                 task_id = path.rsplit("/", 1)[-1]
                 task = TASK_MANAGER.get_task(task_id)
@@ -872,6 +1508,11 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 file_path = task.get("filePath")
                 if not file_path or not os.path.exists(file_path):
                     self._error(404, "file not found")
+                    return
+                try:
+                    ensure_download_file_size_allowed(os.path.getsize(file_path), estimated=False)
+                except DownloadTooLargeError as e:
+                    self._error(400, str(e))
                     return
                 self._send_file(
                     file_path,
@@ -936,7 +1577,7 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                     self._error(400, "keyword is empty")
                     return
                 try:
-                    limit = max(1, min(50, int(limit)))
+                    limit = max(1, min(30, int(limit)))
                 except Exception:
                     limit = 30
                 results = ytdlp_search(keyword, limit)
@@ -952,7 +1593,30 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 if not music_id:
                     self._error(400, "musicId is empty")
                     return
-                task = TASK_MANAGER.create_download_task(music_id)
+                try:
+                    task = TASK_MANAGER.create_download_task(music_id)
+                except ValueError as e:
+                    self._error(400, str(e))
+                    return
+                except DownloadTooLargeError as e:
+                    self._error(400, str(e))
+                    return
+                self._ok(task)
+                return
+
+            if path == "/api/lyrics/generate":
+                music_id = (payload.get("musicId") or payload.get("music_id") or "").strip()
+                if not music_id:
+                    self._error(400, "musicId is empty")
+                    return
+                try:
+                    task = TASK_MANAGER.create_lyrics_task(music_id)
+                except ValueError as e:
+                    self._error(400, str(e))
+                    return
+                except FileNotFoundError as e:
+                    self._error(404, str(e))
+                    return
                 self._ok(task)
                 return
 
@@ -966,7 +1630,8 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                 if client == "desktop" and not PROXY_AUTH_STORE.verify_password(password):
                     self._error(403, "桌面端节点切换密码错误")
                     return
-                self._ok(select_proxy(name))
+                select_proxy(name)
+                self._ok(get_proxy_status_payload())
                 return
 
             self._error(404, f"unknown path: {path}")
@@ -978,6 +1643,7 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
 
 def run_server() -> None:
     proxy_auth = PROXY_AUTH_STORE.ensure_password(iso_ts())
+    fallback_state = load_proxy_fallback_nodes()
     if proxy_auth.get("generated"):
         logger.warning(
             "desktop proxy switch password generated db=%s password=%s",
@@ -986,6 +1652,12 @@ def run_server() -> None:
         )
     else:
         logger.info("desktop proxy switch password loaded db=%s", PROXY_AUTH_DB)
+    logger.info(
+        "proxy fallback nodes loaded path=%s count=%s nodes=%s",
+        fallback_state.get("filePath"),
+        len(fallback_state.get("nodes") or []),
+        " | ".join(normalize_proxy_node_names(fallback_state.get("nodes"))),
+    )
     log_startup_summary()
     logger.info(
         f"music_local_api starting host={LOCAL_API_HOST} port={LOCAL_API_PORT} "

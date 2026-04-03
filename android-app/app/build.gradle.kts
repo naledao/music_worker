@@ -23,8 +23,8 @@ android {
         applicationId = "com.openclaw.musicworker"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.0.5"
+        versionCode = 22
+        versionName = "1.1.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -96,6 +96,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.google.android.material:material:1.12.0")
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-ui:1.5.1")
 
     implementation(composeBom)
     androidTestImplementation(composeBom)

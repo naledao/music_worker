@@ -47,3 +47,5 @@ shared/build/
 .idea/
 *.swp
 windows-installers/
+.cache/
+.tmp/

@@ -13,6 +13,8 @@ from music_config import (
     BASE_DIR,
     COOKIES_FILE,
     LOG_DIR,
+    MAX_DOWNLOAD_FILE_SIZE_BYTES,
+    MAX_DOWNLOAD_FILE_SIZE_MB,
     TEMP_DIR,
     USE_COOKIES,
     WS_PROXY,
@@ -32,6 +34,8 @@ from music_config import (
 logger = logging.getLogger("music_worker")
 logger.setLevel(logging.INFO)
 logger.propagate = False
+
+TARGET_MP3_BITRATE_BPS = 320_000
 
 fmt = logging.Formatter(
     fmt="%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s",
@@ -189,8 +193,63 @@ class YtDlpLogger:
         logger.error(f"{self.prefix}{msg}")
 
 
+class DownloadTooLargeError(RuntimeError):
+    pass
+
+
+def format_bytes_label(size_bytes: int | float | None) -> str:
+    try:
+        value = float(size_bytes or 0)
+    except Exception:
+        value = 0
+
+    if value <= 0:
+        return "0 B"
+
+    units = ("B", "KB", "MB", "GB", "TB")
+    unit_index = 0
+    while value >= 1024.0 and unit_index < len(units) - 1:
+        value /= 1024.0
+        unit_index += 1
+
+    if unit_index == 0:
+        return f"{int(value)} {units[unit_index]}"
+    return f"{value:.1f} {units[unit_index]}"
+
+
+def estimate_mp3_size_bytes(duration_seconds: Any) -> int | None:
+    try:
+        duration_value = float(duration_seconds)
+    except Exception:
+        return None
+
+    if duration_value <= 0:
+        return None
+    return int(duration_value * TARGET_MP3_BITRATE_BPS / 8)
+
+
+def build_download_size_limit_message(file_size: int | None, estimated: bool = False) -> str:
+    prefix = "歌曲预计导出大小" if estimated else "歌曲文件大小"
+    if file_size is None:
+        return f"{prefix}超过限制 {MAX_DOWNLOAD_FILE_SIZE_MB} MB，不允许下载"
+    return (
+        f"{prefix} {format_bytes_label(file_size)}，超过限制 "
+        f"{format_bytes_label(MAX_DOWNLOAD_FILE_SIZE_BYTES)}，不允许下载"
+    )
+
+
+def ensure_download_file_size_allowed(file_size: int | None, estimated: bool = False) -> None:
+    if file_size is None:
+        return
+    if int(file_size) > MAX_DOWNLOAD_FILE_SIZE_BYTES:
+        raise DownloadTooLargeError(build_download_size_limit_message(int(file_size), estimated=estimated))
+
+
 def classify_download_error_message(message: str) -> str:
-    msg = (message or "").lower()
+    raw_message = message or ""
+    msg = raw_message.lower()
+    if "超过限制" in raw_message or "不允许下载" in raw_message:
+        return "size_limit"
     if "too many requests" in msg or "http error 429" in msg:
         return "rate_limited"
     if "sign in to confirm you're not a bot" in msg or "sign in to confirm you’re not a bot" in msg:
@@ -290,6 +349,20 @@ def ytdlp_download_mp3(
                     elapsedSec=progress.get("elapsed"),
                 )
 
+        def match_filter(info_dict: dict[str, Any], *, incomplete: bool = False):
+            if incomplete:
+                return None
+
+            estimated_mp3_size = estimate_mp3_size_bytes(info_dict.get("duration"))
+            if estimated_mp3_size is None:
+                return None
+
+            try:
+                ensure_download_file_size_allowed(estimated_mp3_size, estimated=True)
+            except DownloadTooLargeError as e:
+                return str(e)
+            return None
+
         opts = {
             "format": "bestaudio/best",
             "outtmpl": output_template,
@@ -316,6 +389,7 @@ def ytdlp_download_mp3(
             "merge_output_format": "mp4",
             "ignore_no_formats_error": True,
             "logger": YtDlpLogger(log_prefix),
+            "match_filter": match_filter,
         }
         if status_callback:
             opts["progress_hooks"] = [progress_hook]
@@ -405,11 +479,21 @@ def ytdlp_download_mp3(
                 if not os.path.exists(mp3_path):
                     raise FileNotFoundError(f"MP3 not generated ({strategy_name}): {mp3_path}")
 
+                actual_file_size = os.path.getsize(mp3_path)
+                try:
+                    ensure_download_file_size_allowed(actual_file_size, estimated=False)
+                except DownloadTooLargeError:
+                    try:
+                        os.remove(mp3_path)
+                    except Exception:
+                        logger.warning(f"failed to remove oversized mp3 path={mp3_path}")
+                    raise
+
                 emit_status(
                     "completed",
                     strategy=strategy_name,
                     filePath=mp3_path,
-                    fileSize=os.path.getsize(mp3_path),
+                    fileSize=actual_file_size,
                 )
                 return mp3_path
 
@@ -459,5 +543,6 @@ def log_startup_summary():
         f" pot_script={snapshot['ytDlp']['potScript']}"
         f" proxy={snapshot['proxy']['ytdlp']}"
     )
+    logger.info(f"download_limit={MAX_DOWNLOAD_FILE_SIZE_MB}MB ({MAX_DOWNLOAD_FILE_SIZE_BYTES} bytes)")
     logger.info(f"proxy ws={snapshot['proxy']['ws']}")
     logger.info(f"ffmpeg={snapshot['ffmpeg']}")
