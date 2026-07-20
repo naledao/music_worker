@@ -3,8 +3,7 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
-    id("org.jetbrains.kotlin.plugin.serialization")
+    id("com.facebook.react")
 }
 
 val releaseSigningPropertiesFile = rootProject.file("keystore/release-signing.properties")
@@ -16,24 +15,17 @@ val releaseSigningProperties = Properties().apply {
 
 android {
     namespace = "com.openclaw.musicworker"
-    compileSdk = 36
-    buildToolsVersion = "36.1.0"
+    compileSdk = 34
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.openclaw.musicworker"
         minSdk = 26
-        targetSdk = 36
-        versionCode = 22
-        versionName = "1.1.8"
+        targetSdk = 34
+        versionCode = 33
+        versionName = "1.2.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
-        }
-
-        buildConfigField("String", "DEFAULT_API_HOST", "\"127.0.0.1\"")
-        buildConfigField("int", "DEFAULT_API_PORT", "18081")
-        buildConfigField("int", "DEFAULT_LOG_LINES", "80")
     }
 
     signingConfigs {
@@ -70,8 +62,13 @@ android {
     }
 
     buildFeatures {
-        compose = true
         buildConfig = true
+    }
+
+    sourceSets {
+        getByName("main") {
+            java.setSrcDirs(listOf("src/main/react-native"))
+        }
     }
 
     packaging {
@@ -81,33 +78,56 @@ android {
     }
 }
 
+react {
+    root.set(file(".."))
+    reactNativeDir.set(file("../node_modules/react-native"))
+    codegenDir.set(file("../node_modules/@react-native/codegen"))
+    entryFile.set(file("../index.js"))
+    autolinkLibrariesWithApp()
+}
+
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.facebook.react:react-android")
+    if ((findProperty("hermesEnabled") as? String).toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    } else {
+        implementation("io.github.react-native-community:jsc-android:2026004.0.1")
+    }
+}
 
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.navigation:navigation-compose:2.8.3")
-    implementation("androidx.documentfile:documentfile:1.0.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-    implementation("com.google.android.material:material:1.12.0")
-    implementation("io.coil-kt:coil-compose:2.7.0")
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-ui:1.5.1")
+val publishReleaseApkToMinio by tasks.registering(Exec::class) {
+    group = "publishing"
+    description = "Uploads the signed release APK to the configured local MinIO bucket."
 
-    implementation(composeBom)
-    androidTestImplementation(composeBom)
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.foundation:foundation")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    val repoRoot = rootProject.projectDir.parentFile
+    val publishScript = repoRoot.resolve("bin/publish_android_release_to_minio.py")
+    val releaseApk = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
+    val releaseMetadata = layout.buildDirectory.file("outputs/apk/release/output-metadata.json")
 
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    inputs.file(releaseApk)
+    inputs.file(releaseMetadata).optional()
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!releaseSigningPropertiesFile.exists()) {
+            throw GradleException("Refusing to publish release APK: release signing properties are missing.")
+        }
+        if (!releaseApk.get().asFile.exists()) {
+            throw GradleException("Release APK does not exist: ${releaseApk.get().asFile}")
+        }
+        commandLine(
+            "python3",
+            publishScript.absolutePath,
+            "--apk",
+            releaseApk.get().asFile.absolutePath,
+            "--metadata",
+            releaseMetadata.get().asFile.absolutePath,
+        )
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(publishReleaseApkToMinio)
 }

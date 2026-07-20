@@ -1,5 +1,7 @@
 # Android 独立 App 开发文档
 
+> 当前状态更新（2026-06-15）：后端已移除旧 WebSocket 兼容入口，Android / 桌面端统一通过本地 HTTP API 调用 `music_local_api.py`。本文档后续较早的 WebSocket 设计记录仅作为历史上下文，不再代表当前实现。
+
 ## 1. 文档目标
 
 本文档用于指导把当前 `music_worker` 脚本能力单独包装成一个 Android App。
@@ -14,7 +16,7 @@
 
 ### 1.1 当前进度
 
-截至 `2026-03-26`，本文档对应的代码状态如下：
+截至 `2026-06-15`，本文档对应的代码状态如下：
 
 - `M1. 重构 Python 核心` 已完成
 - `M2. 增加本地 API` 已完成最小可运行版本
@@ -24,8 +26,9 @@
   - `music_core.py`
   - `music_local_api.py`
   - `android-app/`
-- 已重构：
-  - `music_worker_ws.py` 已从“大一统脚本”改为“WebSocket 兼容层”
+- 已移除：
+  - 旧 WebSocket 兼容入口 `music_worker_ws.py`
+  - 远端 WebSocket 连接配置
 - 已实现本地 API：
   - `GET /api/health`
   - `GET /api/proxy/current`
@@ -61,18 +64,15 @@
 
 - `music_config.py`
   - 配置中心
-  - 负责路径、代理、Cookie、PO Token、WS 地址等配置读取
+  - 负责路径、代理、Cookie、PO Token、本地 API 和 mihomo 控制器配置读取
 - `music_core.py`
   - 能力层
   - 负责日志、搜索、下载、错误分类、启动摘要
-- `music_worker_ws.py`
+- `music_local_api.py`
   - 当前主入口
-  - 只保留以下职责：
-    - 通过 WebSocket 与远端服务通信
-    - 接收命令并调用 `music_core`
-    - 返回搜索结果、下载元信息和二进制分片
+  - 通过本地 HTTP API 接收搜索、下载、任务、文件、日志、代理和更新请求
 - `music_worker_supervisor.sh`
-  - 负责拉起并保活 Python worker
+  - 负责拉起并保活本地 HTTP API
   - 启动时注入 `.pydeps` 和 `yt-dlp-plugins` 到 `PYTHONPATH`
 - `mihomo_supervisor.sh`
   - 负责拉起并保活 `mihomo`
@@ -81,7 +81,7 @@
 - `70-mihomo-keepalive.sh`
   - Magisk `service.d` 启动 `mihomo` 保活
 - `90-music-worker-keepalive.sh`
-  - Magisk `service.d` 启动 Python worker 保活
+  - Magisk `service.d` 启动本地 HTTP API 保活
 - `android-app/`
   - Android 独立 App 工程目录
   - 当前已经包含：
@@ -97,7 +97,7 @@
 
 ### 2.2 当前能力
 
-当前运行中的 worker 仍然支持两类命令：
+当前本地 HTTP API 支持两类核心能力：
 
 1. `search`
 2. `download`
@@ -132,16 +132,15 @@
    - `music_config.py`
 2. 核心能力层
    - `music_core.py`
-3. 兼容入口层
-   - `music_worker_ws.py`
+3. 本地 API 入口层
+   - `music_local_api.py`
 
-这样做的目的，是为后续本地 API 和 Android App 接入提供稳定边界。
+这样做的目的，是为 Android App 和桌面客户端提供稳定边界。
 
 ### 2.4 当前运行依赖
 
 - Python 3
 - `yt_dlp`
-- `websockets`
 - `ffmpeg`
 - `mihomo`
 - `bgutil-pot`
@@ -154,7 +153,6 @@
 
 - `MUSIC_COOKIES_FILE`
 - `MUSIC_YTDLP_PROXY`
-- `MUSIC_WS_PROXY`
 - `MUSIC_YTDLP_JS_RUNTIME`
 - `MUSIC_YTDLP_REMOTE_COMPONENTS`
 - `MUSIC_YTDLP_PLUGIN_DIR`
@@ -164,20 +162,14 @@
 - `MUSIC_YTDLP_PLAYER_CLIENTS`
 - `MUSIC_YTDLP_FETCH_POT`
 - `MUSIC_YTDLP_POT_TRACE`
-
-当前代码中还存在硬编码远端连接：
-
-- `B_WS_URL`
-- `WS_AUTH_TOKEN`
-- 远端 IP
-
-这部分不适合作为 Android 独立 App 的长期方案，必须配置化。
+- `MUSIC_LOCAL_API_HOST`
+- `MUSIC_LOCAL_API_PORT`
+- `MUSIC_MIHOMO_CONTROLLER_URL`
+- `MUSIC_MIHOMO_SELECTOR_NAME`
 
 ### 2.6 当前已知遗留问题
 
-- `music_worker_supervisor.sh` 的 `status` 子命令存在误判
-  - 在 worker 实际运行时，偶尔仍显示 `worker: stopped`
-  - 这不影响当前 worker 实际工作
+- 后端已统一到本地 HTTP API，旧远端 WebSocket 通道不再维护
   - 但在后续做本地 API 和 Android 设置页时，需要补一个更可靠的健康检查接口
 
 

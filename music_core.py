@@ -17,7 +17,6 @@ from music_config import (
     MAX_DOWNLOAD_FILE_SIZE_MB,
     TEMP_DIR,
     USE_COOKIES,
-    WS_PROXY,
     YTDLP_FETCH_POT,
     YTDLP_JS_RUNTIME,
     YTDLP_PLAYER_CLIENTS,
@@ -86,7 +85,6 @@ def get_runtime_snapshot() -> dict:
         },
         "proxy": {
             "ytdlp": redact_proxy_url(YTDLP_PROXY),
-            "ws": redact_proxy_url(WS_PROXY),
         },
         "ytDlp": {
             "version": getattr(yt_dlp, "__version__", None)
@@ -544,5 +542,4 @@ def log_startup_summary():
         f" proxy={snapshot['proxy']['ytdlp']}"
     )
     logger.info(f"download_limit={MAX_DOWNLOAD_FILE_SIZE_MB}MB ({MAX_DOWNLOAD_FILE_SIZE_BYTES} bytes)")
-    logger.info(f"proxy ws={snapshot['proxy']['ws']}")
     logger.info(f"ffmpeg={snapshot['ffmpeg']}")

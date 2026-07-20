@@ -29,6 +29,7 @@ from music_config import (
 from music_charts import ChartFetchError, ChartsService
 from music_download_store import DownloadedMusicStore
 from music_lyrics import generate_lrc_for_audio
+from music_minio import get_android_update_payload_from_minio
 from music_proxy_auth_store import ProxyAuthStore
 from music_core import (
     DownloadTooLargeError,
@@ -526,6 +527,13 @@ def sha256_file(file_path: str) -> str:
 
 
 def get_android_app_update_payload() -> dict[str, Any]:
+    try:
+        minio_payload = get_android_update_payload_from_minio()
+        if minio_payload is not None:
+            return minio_payload
+    except Exception as e:
+        logger.warning("load android update from MinIO failed, falling back to local apk: %s", e)
+
     apk_path, metadata_path = get_preferred_android_apk_artifacts()
     if not os.path.exists(apk_path):
         raise FileNotFoundError(f"apk not found: {apk_path}")
@@ -1297,6 +1305,15 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/health":
+                try:
+                    proxy_status = get_proxy_status_payload()
+                except Exception as proxy_error:
+                    proxy_status = {
+                        "available": False,
+                        "degraded": True,
+                        "controllerUrl": MIHOMO_CONTROLLER_URL,
+                        "error": str(proxy_error),
+                    }
                 self._ok(
                     {
                         "service": {
@@ -1306,7 +1323,7 @@ class MusicLocalApiHandler(BaseHTTPRequestHandler):
                         },
                         "runtime": get_runtime_snapshot(),
                         "tasks": TASK_MANAGER.stats(),
-                        "proxy": get_proxy_status_payload(),
+                        "proxy": proxy_status,
                     }
                 )
                 return

@@ -19,7 +19,7 @@ SUPERVISOR_LOG="$LOG_DIR/mihomo_supervisor.log"
 MIHOMO_PIDFILE="$RUN_DIR/mihomo.pid"
 SUPERVISOR_PIDFILE="$RUN_DIR/mihomo_supervisor.pid"
 LOCK_FILE="$RUN_DIR/mihomo_supervisor.lock"
-UI_HEALTH_URL="${UI_HEALTH_URL:-http://127.0.0.1:${CONTROLLER_PORT}/ui/}"
+UI_HEALTH_URL="${UI_HEALTH_URL:-http://127.0.0.1:${CONTROLLER_PORT}/version}"
 
 timestamp() {
   date "+%F %T %z"

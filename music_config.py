@@ -11,19 +11,6 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(STATE_DIR, exist_ok=True)
 
 
-WS_AUTH_TOKEN = (os.environ.get("MUSIC_WS_AUTH_TOKEN") or "").strip()
-IP = os.environ.get("MUSIC_LOCAL_IP", "127.0.0.1")
-RIP = os.environ.get("MUSIC_REMOTE_IP", "14.103.202.40")
-DEFAULT_B_WS_URL = f"ws://{RIP}:9880/usts-campus-services/ws/music"
-if WS_AUTH_TOKEN:
-    DEFAULT_B_WS_URL = f"{DEFAULT_B_WS_URL}?token={WS_AUTH_TOKEN}"
-B_WS_URL = os.environ.get("MUSIC_B_WS_URL") or DEFAULT_B_WS_URL
-
-
-CHUNK_SIZE = 256 * 1024
-PROGRESS_EVERY_N_CHUNKS = 20
-
-
 COOKIES_FILE = os.environ.get("MUSIC_COOKIES_FILE") or os.path.join(BASE_DIR, "cookies.txt")
 USE_COOKIES = os.path.exists(COOKIES_FILE)
 YTDLP_JS_RUNTIME = os.environ.get("MUSIC_YTDLP_JS_RUNTIME", "node").strip()
@@ -95,7 +82,6 @@ def normalize_controller_bind(bind_value: str) -> str:
 
 
 YTDLP_PROXY = get_proxy_config("MUSIC_YTDLP_PROXY", "http://127.0.0.1:7890")
-WS_PROXY = get_proxy_config("MUSIC_WS_PROXY")
 YTDLP_PLUGIN_DIR = os.environ.get(
     "MUSIC_YTDLP_PLUGIN_DIR",
     os.path.join(BASE_DIR, "yt-dlp-plugins"),

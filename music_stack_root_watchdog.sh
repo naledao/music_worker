@@ -7,12 +7,14 @@ SELF_PATH="$BASE_DIR/$(basename "${BASH_SOURCE[0]}")"
 PID_FILE="/data/adb/music_stack_root_watchdog.pid"
 LOCK_FILE="/data/adb/music_stack_root_watchdog.lock"
 LOG_FILE="/data/adb/music_stack_root_watchdog.log"
+MUSIC_WORKER_FAILURE_MARKER="$BASE_DIR/run/music_worker_keepalive.failed"
 
-BASH_BIN="${BASH_BIN:-/data/data/com.termux/files/usr/bin/bash}"
+BASH_BIN="${BASH_BIN:-/bin/bash}"
 PROOT_DISTRO="${PROOT_DISTRO:-/data/data/com.termux/files/usr/bin/proot-distro}"
 DISTRO_NAME="${DISTRO_NAME:-debian-nolocale}"
 INTERVAL="${MUSIC_STACK_WATCHDOG_INTERVAL:-30}"
 START_TIMEOUT="${MUSIC_STACK_WATCHDOG_START_TIMEOUT:-90}"
+MUSIC_WORKER_FAILURE_RETRY_SECONDS="${MUSIC_WORKER_FAILURE_RETRY_SECONDS:-300}"
 
 MUSIC_WORKER_SUPERVISOR="$BASE_DIR/music_worker_supervisor.sh"
 MIHOMO_SUPERVISOR="$BASE_DIR/mihomo_supervisor.sh"
@@ -130,8 +132,47 @@ find_supervisor_pid() {
   return 1
 }
 
+music_worker_keepalive_stopped() {
+  local marker_boot_id
+  local current_boot_id
+  local marker_mtime
+  local now
+  local marker_age
+
+  [[ -f "$MUSIC_WORKER_FAILURE_MARKER" ]] || return 1
+
+  marker_boot_id="$(awk -F= '$1 == "boot_id" { print $2; exit }' "$MUSIC_WORKER_FAILURE_MARKER" 2>/dev/null || true)"
+  current_boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+
+  if [[ -n "$marker_boot_id" && -n "$current_boot_id" && "$marker_boot_id" != "$current_boot_id" ]]; then
+    echo "[$(timestamp)] removing stale music_worker failure marker from previous boot marker=$MUSIC_WORKER_FAILURE_MARKER" >> "$LOG_FILE"
+    rm -f "$MUSIC_WORKER_FAILURE_MARKER"
+    return 1
+  fi
+
+  if [[ "$MUSIC_WORKER_FAILURE_RETRY_SECONDS" =~ ^[0-9]+$ ]] && (( MUSIC_WORKER_FAILURE_RETRY_SECONDS > 0 )); then
+    marker_mtime="$(stat -c %Y "$MUSIC_WORKER_FAILURE_MARKER" 2>/dev/null || true)"
+    now="$(date +%s 2>/dev/null || true)"
+    if [[ -n "$marker_mtime" && -n "$now" ]]; then
+      marker_age=$(( now - marker_mtime ))
+      if (( marker_age >= MUSIC_WORKER_FAILURE_RETRY_SECONDS )); then
+        echo "[$(timestamp)] retrying music_worker after failure cooldown age=${marker_age}s retry=${MUSIC_WORKER_FAILURE_RETRY_SECONDS}s marker=$MUSIC_WORKER_FAILURE_MARKER" >> "$LOG_FILE"
+        rm -f "$MUSIC_WORKER_FAILURE_MARKER"
+        return 1
+      fi
+    fi
+  fi
+
+  return 0
+}
+
 run_target_cmd() {
   local cmd="$1"
+
+  if [[ -x /bin/bash && -d "$BASE_DIR" ]]; then
+    timeout "$START_TIMEOUT" /bin/bash -lc "$cmd"
+    return $?
+  fi
 
   if is_nested_proot; then
     timeout "$START_TIMEOUT" /bin/bash -lc "$cmd"
@@ -175,7 +216,12 @@ ensure_supervisor_started() {
 
 run_once() {
   ensure_supervisor_started "mihomo" "$MIHOMO_SUPERVISOR" "$MIHOMO_START_CMD" || true
-  ensure_supervisor_started "music_worker" "$MUSIC_WORKER_SUPERVISOR" "$MUSIC_WORKER_START_CMD" || true
+
+  if music_worker_keepalive_stopped; then
+    echo "[$(timestamp)] music_worker keepalive disabled after max failures marker=$MUSIC_WORKER_FAILURE_MARKER retry_after=${MUSIC_WORKER_FAILURE_RETRY_SECONDS}s" >> "$LOG_FILE"
+  else
+    ensure_supervisor_started "music_worker" "$MUSIC_WORKER_SUPERVISOR" "$MUSIC_WORKER_START_CMD" || true
+  fi
 }
 
 run_loop() {

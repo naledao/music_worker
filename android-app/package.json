@@ -1,0 +1,43 @@
+{
+  "name": "music-worker-android",
+  "version": "1.2.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "start": "react-native start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react-native": "^1.18.0",
+    "nativewind": "^4.2.5",
+    "react": "19.0.0",
+    "react-native": "0.79.5",
+    "react-native-css-interop": "0.2.5",
+    "react-native-safe-area-context": "^5.4.0",
+    "react-native-svg": "^15.8.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@babel/preset-env": "^7.25.3",
+    "@babel/runtime": "^7.25.0",
+    "@react-native-community/cli": "18.0.0",
+    "@react-native-community/cli-platform-android": "18.0.0",
+    "@react-native/babel-preset": "0.79.5",
+    "@react-native/eslint-config": "0.79.5",
+    "@react-native/metro-config": "0.79.5",
+    "@react-native/typescript-config": "0.79.5",
+    "@types/jest": "^30.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-test-renderer": "^19.0.0",
+    "babel-plugin-module-resolver": "^5.0.2",
+    "prettier": "2.8.8",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.0.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -30,8 +30,6 @@
   搜索、下载、日志、错误分类等核心能力
 - [music_local_api.py](./music_local_api.py)
   本地 HTTP API，供 App 调用
-- [music_worker_ws.py](./music_worker_ws.py)
-  兼容旧 WebSocket 模式的入口
 - [android-app](./android-app)
   Android 原生应用工程，应用名为“音爪”
 - [desktop-app](./desktop-app)
@@ -41,7 +39,7 @@
 - [music_download_store.py](./music_download_store.py)
   已下载歌曲的 SQLite 索引存储，用于搜索结果标记与下载复用
 - [music_worker_supervisor.sh](./music_worker_supervisor.sh)
-  Python worker 保活脚本
+  本地 HTTP API 保活脚本
 - [mihomo_supervisor.sh](./mihomo_supervisor.sh)
   mihomo 保活脚本
 - [60-music-stack-root-watchdog.sh](./60-music-stack-root-watchdog.sh)
@@ -85,8 +83,6 @@
 - `MUSIC_MIHOMO_CONTROLLER_URL`
 - `MUSIC_MIHOMO_SECRET`
 - `MUSIC_MIHOMO_SELECTOR_NAME`
-- `MUSIC_WS_AUTH_TOKEN`
-- `MUSIC_B_WS_URL`
 
 ### 2. 启动本地 API
 
@@ -200,6 +196,7 @@ gradle :app:assembleRelease
 
 - Linux / proot 侧通过 `music_worker_supervisor.sh`、`mihomo_supervisor.sh`
 - Android / Magisk 侧通过 `service.d` 脚本和 root watchdog
+- `music_worker_supervisor.sh` 会通过 `/api/health` 检查本地 API；连续保活失败 6 次后写入 `run/music_worker_keepalive.failed` 并退出，root watchdog 看到该标记后不再继续拉起 music worker。手动 `./music_worker_supervisor.sh start|restart|stop` 会清理该标记并允许重新尝试。
 
 相关脚本：
 
@@ -211,7 +208,6 @@ gradle :app:assembleRelease
 ## 安全说明
 
 - 本仓库不会提交 `cookies.txt`、签名 keystore、日志和本地缓存
-- `WS_AUTH_TOKEN` 不再硬编码在仓库内，应通过环境变量注入
 - `mihomo` 的 controller secret 也应通过环境变量或本地配置文件提供
 
 ## 已知事项
